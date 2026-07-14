@@ -1,0 +1,36 @@
+# Copy this file to config.yaml. Keep the real file out of Git.
+ib:
+  host: "127.0.0.1"
+  port: 4002
+  client_id: 31
+  connect_timeout_seconds: 10
+  request_timeout_seconds: 30
+
+paths:
+  raw_data_dir: "./data/raw"
+  intermediate_data_dir: "./data/processed"
+  output_dir: "./data/output"
+  checkpoint_file: "./data/checkpoint.json"
+  log_dir: "./logs"
+
+prices:
+  symbols_file: "./symbols.example.csv"
+  duration: "5 Y"
+  use_rth: true
+
+news:
+  symbols:
+    - "AAPL"
+    - "MSFT"
+  providers:
+    - "BRFG"
+    - "BRFUPDN"
+    - "DJNL"
+  lookback_days: 2
+  overlap_minutes: 5
+  limit: 100
+
+run:
+  max_retries: 3
+  retry_delay_seconds: 5
+  continue_on_error: true

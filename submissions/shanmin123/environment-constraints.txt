@@ -1,0 +1,14 @@
+# FinStream production environment contract
+apache-airflow==2.8.1
+pyspark==3.5.1
+pandas==1.3.5
+numpy==1.22.4
+scikit-learn==0.24.2
+SQLAlchemy==1.4.46
+pydantic==2.4.2
+tensorflow==2.10.1
+pyarrow==12.0.1
+
+# Runtime versions outside pip
+# Python 3.8
+# Java 17

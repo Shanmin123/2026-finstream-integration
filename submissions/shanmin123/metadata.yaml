@@ -1,0 +1,38 @@
+data_source:
+  name: "IBKR daily stock bars and news headlines"
+  provider: "Interactive Brokers LLC"
+  description: >-
+    Historical daily stock OHLCV bars and historical news headline metadata
+    available to the authenticated IBKR paper-trading username.
+
+api:
+  endpoint: >-
+    TWS API socket exposed by IB Gateway; reqContractDetails,
+    reqHistoricalData, reqNewsProviders, and reqHistoricalNews
+  auth_method: >-
+    Interactive login in IB Gateway; the Python socket client uses host, port,
+    and client ID and does not receive account credentials
+  rate_limit: >-
+    IBKR request pacing applies. The collector sends requests sequentially and
+    retries errors using the configured delay; news availability depends on the
+    username's API news providers.
+  docs_url: "https://interactivebrokers.github.io/tws-api/"
+
+output:
+  schema: "schema.md"
+  format: "Raw JSONL; normalised and final Apache Parquet"
+  update_frequency: "Configurable; intended for daily scheduled collection"
+
+storage_policy:
+  raw_data_location: "Configured paths.raw_data_dir on the authorised runtime"
+  intermediate_data_location: >-
+    Configured paths.intermediate_data_dir on the authorised runtime
+  final_dataset_location: "Configured paths.output_dir on the authorised runtime"
+  access_instructions: >-
+    Run with an authorised IBKR paper username and its available market-data and
+    news entitlements. Assign persistent FinStream storage paths in config.yaml.
+
+notes: >-
+  GitHub contains code, schema, and synthetic samples only. News article bodies
+  are not requested or stored. Account, order, and delayed snapshot checks are
+  outside the persisted production datasets.
