@@ -127,3 +127,38 @@ def test_write_quotes_partitions_by_date_and_symbol(tmp_path):
     again = storage.write_quotes(rows, {}, "2026-07-25T14:02:00+00:00", "quotes-test-2")
     assert again.final_rows == 3                # dedup on (symbol, tick_time_utc, field)
     assert result.raw_path.exists()
+
+
+def test_live_features_converge_to_batch_when_last_equals_real_close():
+    # If the streamed last equals the real next close, the provisional indicator
+    # row must match the batch computation on the series that includes that bar.
+    from pipeline.features import compute_live_features
+
+    full = _prices(n=60)
+    history = full.iloc[:59].reset_index(drop=True)     # up to yesterday
+    real_next = full.iloc[59]
+    live_i, live_a = compute_live_features(
+        history,
+        {"TEST": (float(real_next["close"]), str(real_next["event_date"]))},
+        COMPUTED_AT,
+    )
+    assert len(live_i) == 1 and len(live_a) == 1
+    row = live_i.iloc[0]
+    assert row["event_date"] == real_next["event_date"]
+    assert bool(row["provisional"]) is True and row["as_of_utc"] == COMPUTED_AT
+    # Close-derived indicators converge exactly (sma/ema/macd/rsi read closes only).
+    batch = compute_indicators(
+        pd.concat([history, pd.DataFrame([{**real_next.to_dict(),
+            "open": real_next["close"], "high": real_next["close"],
+            "low": real_next["close"], "volume": 0.0}])], ignore_index=True),
+        COMPUTED_AT,
+    ).iloc[-1]
+    for col in ("sma_20", "ema_12", "macd", "rsi_14", "bb_mid_20"):
+        assert row[col] == pytest.approx(batch[col])
+
+
+def test_live_features_skip_symbols_without_ticks():
+    from pipeline.features import compute_live_features
+
+    live_i, live_a = compute_live_features(_prices(n=30), {}, COMPUTED_AT)
+    assert live_i.empty and live_a.empty

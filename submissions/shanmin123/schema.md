@@ -117,3 +117,14 @@ Final partition path: `quotes/event_date=YYYY-MM-DD/symbol=SYMBOL/part-000.parqu
 Collected with `reqMktData` market data type 3 (delayed, the free paper tier,
 15-20 minutes behind); with live market-data subscriptions the same command
 streams real time (`stream.market_data_type: 1`).
+
+## Live Feature Parquet (provisional intraday)
+
+`indicators_live` and `alphas_live` carry the same columns as the daily datasets
+plus `as_of_utc` (refresh time) and `provisional` (always true). Each row is the
+latest intraday value: the newest streamed `last` price is appended to the daily
+series as a provisional bar (open=high=low=close=last, volume 0) and the daily
+formulas are recomputed. Values converge to the final daily rows once the real
+bar is collected. Partition path mirrors the daily datasets
+(`indicators_live/event_year=YYYY/symbol=SYMBOL/part-000.parquet`); dedup key
+`(symbol, event_date)` keeps the newest refresh.

@@ -99,6 +99,7 @@ python -m pipeline.main --config config.yaml collect-news
 python -m pipeline.main --config config.yaml run-all
 python -m pipeline.main --config config.yaml compute-features
 python -m pipeline.main --config config.yaml stream-quotes
+python -m pipeline.main --config config.yaml compute-live-features
 ```
 
 `smoke-test` performs read-only AAPL-style price and news checks without writing
@@ -110,6 +111,11 @@ final prices dataset and writes the indicators and alphas datasets.
 dataset. The free paper tier streams delayed data (15-20 minutes behind);
 with market-data subscriptions the same command streams real time
 (`stream.market_data_type: 1`). Schedule it in a loop for a continuous feed.
+`compute-live-features` needs no Gateway: it reads the persisted prices and the
+newest streamed `last` per symbol and refreshes provisional intraday rows of the
+indicator and alpha datasets (`indicators_live`, `alphas_live`); loop
+`stream-quotes` + `compute-live-features` for a continuously updating feature
+feed at the market-data tier's latency.
 
 ## Universe note
 

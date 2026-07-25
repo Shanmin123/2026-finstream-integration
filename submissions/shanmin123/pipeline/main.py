@@ -30,6 +30,10 @@ def build_parser():
         help="Stream delayed quote ticks for stream.symbols and persist them.",
     )
     subparsers.add_parser(
+        "compute-live-features",
+        help="Provisional intraday indicator/alpha refresh from streamed quotes.",
+    )
+    subparsers.add_parser(
         "compute-features",
         help="Compute technical indicators and the Alpha101 subset from final prices.",
     )
@@ -67,6 +71,7 @@ def main(argv=None):
         "run-all": runner.run_all,
         "compute-features": runner.run_features,
         "stream-quotes": runner.run_stream,
+        "compute-live-features": runner.run_live_features,
     }
     try:
         result = commands[args.command]()

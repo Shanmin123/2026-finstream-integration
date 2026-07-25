@@ -199,3 +199,50 @@ def compute_alphas(prices, computed_at_utc):
     result["alpha_20"] = (-1.0 * rank_h) * rank_c * rank_l
     result = result.drop(columns=["_a20_h", "_a20_c", "_a20_l"])
     return result.loc[:, list(ALPHA_COLUMNS)]
+
+
+LIVE_EXTRA_COLUMNS = ("as_of_utc", "provisional")
+
+
+def compute_live_features(prices, last_by_symbol, as_of_utc):
+    """Provisional intraday refresh of the daily indicators and alphas.
+
+    For each symbol with a streamed last price, appends a provisional daily bar
+    (open=high=low=close=last, volume 0) dated by the tick's UTC date, recomputes
+    the daily features over the extended series, and returns only that provisional
+    last row per symbol. Values converge to the final ones once the real daily bar
+    replaces the provisional close. Returns (indicators_frame, alphas_frame).
+    """
+    data = _prepare(prices)
+    extended = []
+    for symbol, g in data.groupby("symbol", sort=True):
+        tick = last_by_symbol.get(symbol)
+        if tick is None:
+            continue
+        last_price, tick_date = float(tick[0]), str(tick[1])
+        g = g[g["event_date"] < tick_date]
+        if g.empty:
+            continue
+        provisional = {
+            "symbol": symbol,
+            "event_date": tick_date,
+            "open": last_price,
+            "high": last_price,
+            "low": last_price,
+            "close": last_price,
+            "volume": 0.0,
+        }
+        extended.append(pd.concat([g, pd.DataFrame([provisional])], ignore_index=True))
+    if not extended:
+        empty_i = pd.DataFrame(columns=list(INDICATOR_COLUMNS) + list(LIVE_EXTRA_COLUMNS))
+        empty_a = pd.DataFrame(columns=list(ALPHA_COLUMNS) + list(LIVE_EXTRA_COLUMNS))
+        return empty_i, empty_a
+    panel = pd.concat(extended, ignore_index=True)
+    indicators = compute_indicators(panel, as_of_utc)
+    alphas = compute_alphas(panel, as_of_utc)
+    live_i = indicators.sort_values("event_date").groupby("symbol", sort=True).tail(1)
+    live_a = alphas.sort_values("event_date").groupby("symbol", sort=True).tail(1)
+    for frame in (live_i, live_a):
+        frame["as_of_utc"] = as_of_utc
+        frame["provisional"] = True
+    return live_i.reset_index(drop=True), live_a.reset_index(drop=True)

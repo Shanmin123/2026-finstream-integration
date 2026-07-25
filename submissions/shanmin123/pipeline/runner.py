@@ -234,6 +234,34 @@ class PipelineRunner:
 
         return self._run_connected(stream)
 
+    def run_live_features(self):
+        from pipeline.features import compute_live_features
+
+        prices = self.storage.read_final_prices()
+        if prices.empty:
+            raise RuntimeError(
+                "No final prices found. Run collect-prices before compute-live-features."
+            )
+        last_by_symbol = self.storage.read_latest_quote_last()
+        if not last_by_symbol:
+            raise RuntimeError(
+                "No streamed quotes found. Run stream-quotes before compute-live-features."
+            )
+        as_of = self._utc_now().isoformat()
+        live_i, live_a = compute_live_features(prices, last_by_symbol, as_of)
+        summary = {}
+        for dataset, frame in (("indicators_live", live_i), ("alphas_live", live_a)):
+            result = self.storage.write_derived(
+                dataset, frame, ("symbol", "event_date"), "as_of_utc"
+            )
+            summary[dataset] = {"rows": result.final_rows, "symbols": len(frame)}
+            self.logger.info(
+                "dataset_write_complete",
+                extra={"dataset": dataset, "symbol": "*", "rows": result.final_rows},
+            )
+        summary["as_of_utc"] = as_of
+        return summary
+
     def run_features(self):
         """Compute technical indicators and the Alpha101 subset (offline).
 
