@@ -185,8 +185,8 @@ class IBApiClient(EWrapper, EClient):
 
     def newsProviders(self, newsProviders):
         # ibapi 9.81 names the fields code/name; 10.x uses providerCode/providerName.
-        # Read both shapes, and never let a reader-thread exception escape (it would
-        # kill the socket reader and strand the session), record it instead.
+        # An exception here runs on the socket reader thread, so it is recorded and
+        # re-raised on the caller side instead of killing the reader.
         try:
             self._providers = [
                 {
@@ -197,7 +197,7 @@ class IBApiClient(EWrapper, EClient):
                 }
                 for provider in newsProviders
             ]
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             self._providers_error = exc
         self._providers_event.set()
 
