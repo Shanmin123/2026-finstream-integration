@@ -267,3 +267,28 @@ def test_error_during_the_final_interval_is_not_lost_to_the_deadline(monkeypatch
     monkeypatch.setattr("pipeline.ibapi_client.time.sleep", reject_then_expire)
     with pytest.raises(IBRequestError, match="354"):
         client.stream_quotes(["AAPL"], 0.05)
+
+
+def test_dropped_socket_stops_a_stream_even_without_an_error_code(monkeypatch):
+    """Killing Gateway closes the socket through connectionClosed() without
+    necessarily emitting 1100, which used to read as a successful empty run."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+    monkeypatch.setattr(client, "cancelMktData", lambda _r: None)
+
+    monkeypatch.setattr(
+        "pipeline.ibapi_client.time.sleep", lambda _s: client.connectionClosed()
+    )
+    with pytest.raises(IBRequestError, match="1100"):
+        client.stream_quotes(["AAPL"], 5)
+
+
+def test_intentional_disconnect_is_not_reported_as_a_failure(monkeypatch):
+    # A graceful shutdown also fires connectionClosed(); it must not be
+    # recorded as a dropped connection.
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(EClient, "disconnect", lambda _c: client.connectionClosed())
+    client.disconnect()
+    assert client.stream_error() is None

@@ -45,6 +45,7 @@ class IBApiClient(EWrapper, EClient):
 
         self._connected_event = threading.Event()
         self._connection_error = None
+        self._closing = False
         self._network_thread = None
         self._id_lock = threading.Lock()
         self._next_id = 1000
@@ -68,6 +69,7 @@ class IBApiClient(EWrapper, EClient):
     def connect(self):
         self._connected_event.clear()
         self._connection_error = None
+        self._closing = False
         EClient.connect(
             self,
             self.host,
@@ -95,6 +97,9 @@ class IBApiClient(EWrapper, EClient):
             raise self._connection_error
 
     def disconnect(self):
+        # Mark the shutdown as intentional so the connectionClosed callback it
+        # triggers is not mistaken for a dropped socket.
+        self._closing = True
         EClient.disconnect(self)
         network_thread = self._network_thread
         self._network_thread = None
@@ -110,6 +115,14 @@ class IBApiClient(EWrapper, EClient):
         self._connected_event.set()
 
     def connectionClosed(self):
+        # The reader calls this for a graceful disconnect AND for a socket that
+        # died (Gateway killed, cable pulled), which does not always come with a
+        # 1100/502/504 error. Without recording it, a stream would keep waiting
+        # or finish "successfully" having collected nothing.
+        if not self._closing and self._connection_error is None:
+            self._connection_error = IBRequestError(
+                -1, 1100, "IB Gateway connection closed while the client was running"
+            )
         self._connected_event.set()
 
     def error(self, reqId, errorCode, errorString, *args):
