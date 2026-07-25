@@ -234,6 +234,110 @@ class PipelineRunner:
 
         return self._run_connected(stream)
 
+    def run_stream_pipeline(self):
+        """Continuous streaming pipeline: ticks in, features out, until stopped.
+
+        One long-running process. The daily price history is loaded once as warm
+        state; the quote subscription then drives everything. Every
+        ``stream.flush_interval_seconds`` the buffered ticks are appended to the
+        quotes dataset and the provisional live features are recomputed for the
+        symbols that moved. Writes are micro-batched at the flush interval rather
+        than per tick because the sink is partitioned parquet; the trigger is the
+        tick flow, not a schedule. Runs until ``stream.duration_seconds``
+        (0 = until interrupted).
+        """
+        from pipeline.features import compute_live_features
+
+        prices = self.storage.read_final_prices()
+        if prices.empty:
+            raise RuntimeError(
+                "No final prices found. Run collect-prices before stream-pipeline."
+            )
+        cfg = self.config.stream
+        symbols = list(cfg.symbols)
+        state = {"ticks": 0, "quote_rows": 0, "feature_rows": 0, "flushes": 0}
+        last_by_symbol = {}
+
+        def flush():
+            rows = self.client.drain_ticks()
+            if not rows:
+                return
+            now = self._utc_now()
+            state["ticks"] += len(rows)
+            state["flushes"] += 1
+            result = self.storage.write_quotes(
+                rows,
+                {"symbols": symbols, "market_data_type": cfg.market_data_type},
+                now.isoformat(),
+                self._run_id("quotes", "stream", now),
+            )
+            state["quote_rows"] += result.final_rows
+            for row in rows:
+                if row["field"] == "last":
+                    last_by_symbol[row["symbol"]] = (
+                        row["value"],
+                        row["tick_time_utc"][:10],
+                    )
+            if not last_by_symbol:
+                return
+            live_i, live_a = compute_live_features(
+                prices, last_by_symbol, now.isoformat()
+            )
+            for dataset, frame in (
+                ("indicators_live", live_i),
+                ("alphas_live", live_a),
+            ):
+                written = self.storage.write_derived(
+                    dataset, frame, ("symbol", "event_date"), "as_of_utc"
+                )
+                state["feature_rows"] += written.final_rows
+            self.logger.info(
+                "stream_flush",
+                extra={
+                    "dataset": "quotes+live_features",
+                    "symbol": "*",
+                    "rows": len(rows),
+                },
+            )
+
+        def pipeline():
+            self.client.start_quote_stream(
+                symbols, market_data_type=cfg.market_data_type
+            )
+            self.logger.info(
+                "stream_started",
+                extra={"dataset": "quotes", "symbol": ",".join(symbols), "rows": 0},
+            )
+            deadline = (
+                time.time() + cfg.duration_seconds if cfg.duration_seconds else None
+            )
+            try:
+                while deadline is None or time.time() < deadline:
+                    self.sleep_fn(cfg.flush_interval_seconds)
+                    flush()
+            except KeyboardInterrupt:
+                self.logger.info(
+                    "stream_interrupted",
+                    extra={"dataset": "quotes", "symbol": "*", "rows": 0},
+                )
+            finally:
+                self.client.stop_quote_stream()
+                flush()
+                self.logger.info(
+                    "stream_stopped",
+                    extra={"dataset": "quotes", "symbol": "*", "rows": state["ticks"]},
+                )
+            return {
+                "symbols": symbols,
+                "ticks": state["ticks"],
+                "quote_rows": state["quote_rows"],
+                "live_feature_rows": state["feature_rows"],
+                "flushes": state["flushes"],
+                "market_data_type": cfg.market_data_type,
+            }
+
+        return self._run_connected(pipeline)
+
     def run_live_features(self):
         from pipeline.features import compute_live_features
 

@@ -49,6 +49,12 @@ class IBApiClient(EWrapper, EClient):
         self._providers = []
         self._providers_error = None
 
+        # Tick buffer: filled by the socket reader thread, drained by the caller.
+        self._stream_lock = threading.Lock()
+        self._stream_rows = []
+        self._stream_symbols = {}
+        self._stream_request_ids = []
+
     def connect(self):
         self._connected_event.clear()
         self._connection_error = None
@@ -298,34 +304,50 @@ class IBApiClient(EWrapper, EClient):
             "wap": getattr(bar, "wap", getattr(bar, "average", None)),
         }
 
-    def stream_quotes(self, symbols, duration_seconds, market_data_type=3):
-        """Stream quote ticks for ``symbols`` for ``duration_seconds``.
+    def start_quote_stream(self, symbols, market_data_type=3):
+        """Subscribe to quote ticks for ``symbols`` and return immediately.
 
         Uses reqMktData streaming. market_data_type 3 = delayed (the free paper
         tier, 15-20 minutes behind); with live market-data subscriptions the
-        same call streams real time (type 1). Returns the collected tick rows.
+        same subscription streams real time (type 1). Ticks accumulate in a
+        buffer that ``drain_ticks`` empties.
         """
         self.reqMarketDataType(market_data_type)
-        self._stream_rows = []
+        with self._stream_lock:
+            self._stream_rows = []
         self._stream_symbols = {}
-        request_ids = []
+        self._stream_request_ids = []
         for symbol in symbols:
             contract = self.resolve_stock_contract(symbol)
             request_id = self._new_request()
             self._stream_symbols[request_id] = symbol
-            request_ids.append(request_id)
+            self._stream_request_ids.append(request_id)
             self.reqMktData(request_id, contract, "", False, False, [])
+        return list(self._stream_request_ids)
+
+    def drain_ticks(self):
+        """Return the ticks received since the last drain and clear the buffer."""
+        with self._stream_lock:
+            rows = self._stream_rows
+            self._stream_rows = []
+        return rows
+
+    def stop_quote_stream(self):
+        for request_id in getattr(self, "_stream_request_ids", []):
+            self.cancelMktData(request_id)
+            self._stream_symbols.pop(request_id, None)
+        self._stream_request_ids = []
+
+    def stream_quotes(self, symbols, duration_seconds, market_data_type=3):
+        """Collect ticks for a fixed window (batch wrapper over the stream primitives)."""
+        self.start_quote_stream(symbols, market_data_type=market_data_type)
         try:
             deadline = time.time() + duration_seconds
             while time.time() < deadline:
                 time.sleep(0.25)
         finally:
-            for request_id in request_ids:
-                self.cancelMktData(request_id)
-                self._stream_symbols.pop(request_id, None)
-        rows = self._stream_rows
-        self._stream_rows = []
-        return rows
+            self.stop_quote_stream()
+        return self.drain_ticks()
 
     _TICK_PRICE_FIELDS = {
         1: "bid", 2: "ask", 4: "last", 6: "high", 7: "low", 9: "close",
@@ -343,17 +365,17 @@ class IBApiClient(EWrapper, EClient):
         self._record_tick(reqId, self._TICK_SIZE_FIELDS.get(tickType), size)
 
     def _record_tick(self, request_id, field, value):
-        symbol = getattr(self, "_stream_symbols", {}).get(request_id)
+        symbol = self._stream_symbols.get(request_id)
         if symbol is None or field is None or value in (None, -1):
             return
-        self._stream_rows.append(
-            {
-                "tick_time_utc": datetime.now(timezone.utc).isoformat(),
-                "symbol": symbol,
-                "field": field,
-                "value": float(value),
-            }
-        )
+        row = {
+            "tick_time_utc": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "field": field,
+            "value": float(value),
+        }
+        with self._stream_lock:
+            self._stream_rows.append(row)
 
     @staticmethod
     def _parse_news_time(value):

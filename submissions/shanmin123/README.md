@@ -98,6 +98,7 @@ python -m pipeline.main --config config.yaml collect-prices
 python -m pipeline.main --config config.yaml collect-news
 python -m pipeline.main --config config.yaml run-all
 python -m pipeline.main --config config.yaml compute-features
+python -m pipeline.main --config config.yaml stream-pipeline
 python -m pipeline.main --config config.yaml stream-quotes
 python -m pipeline.main --config config.yaml compute-live-features
 ```
@@ -106,16 +107,24 @@ python -m pipeline.main --config config.yaml compute-live-features
 data or advancing checkpoints. `run-all` opens one Gateway connection and runs
 both production collectors. `compute-features` needs no Gateway: it reads the
 final prices dataset and writes the indicators and alphas datasets.
-`stream-quotes` streams quote ticks for `stream.symbols` for
-`stream.duration_seconds` per invocation and appends them to the quotes
-dataset. The free paper tier streams delayed data (15-20 minutes behind);
-with market-data subscriptions the same command streams real time
-(`stream.market_data_type: 1`). Schedule it in a loop for a continuous feed.
-`compute-live-features` needs no Gateway: it reads the persisted prices and the
-newest streamed `last` per symbol and refreshes provisional intraday rows of the
-indicator and alpha datasets (`indicators_live`, `alphas_live`); loop
-`stream-quotes` + `compute-live-features` for a continuously updating feature
-feed at the market-data tier's latency.
+`stream-pipeline` is the continuous mode and the one to run in production: a
+single long-lived process that loads the daily history once as warm state,
+subscribes to quote ticks, and on every `stream.flush_interval_seconds` appends
+the buffered ticks to the quotes dataset and recomputes the provisional live
+features for the symbols that moved. Arriving ticks drive the work — a quiet
+interval writes nothing. Set `stream.duration_seconds: 0` to run until stopped
+(Ctrl-C shuts down cleanly: the subscription is cancelled and pending ticks are
+flushed). Writes are micro-batched at the flush interval rather than per tick
+because the sink is partitioned parquet.
+
+The free paper tier streams delayed data (15-20 minutes behind); with
+market-data subscriptions the same process streams real time
+(`stream.market_data_type: 1`) with no code change.
+
+`stream-quotes` and `compute-live-features` run the same two stages standalone
+(capture-only for a fixed window, and an offline feature refresh from persisted
+state that needs no Gateway). They share the pipeline's code and are useful for
+backfill and testing.
 
 ## Universe note
 

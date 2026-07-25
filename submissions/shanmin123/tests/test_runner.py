@@ -169,3 +169,100 @@ def test_inter_symbol_throttle_sleeps_between_symbols(pipeline_config):
     delay = pipeline_config.run.symbol_delay_seconds
     expected = [delay] * (n_symbols - 1) if delay > 0 else []
     assert sleeps == expected
+
+
+class FakeStreamClient(FakeClient):
+    """Emits one batch of ticks per drain, then goes quiet."""
+
+    def __init__(self, batches):
+        super().__init__()
+        self.batches = list(batches)
+        self.started = None
+        self.stopped = 0
+
+    def start_quote_stream(self, symbols, market_data_type=3):
+        self.started = (list(symbols), market_data_type)
+        return [1, 2]
+
+    def drain_ticks(self):
+        return self.batches.pop(0) if self.batches else []
+
+    def stop_quote_stream(self):
+        self.stopped += 1
+
+
+def _tick(symbol, field, value, date="2026-07-25"):
+    return {
+        "tick_time_utc": date + "T14:00:00+00:00",
+        "symbol": symbol,
+        "field": field,
+        "value": value,
+    }
+
+
+def test_stream_pipeline_is_tick_driven_and_writes_each_flush(pipeline_config, tmp_path):
+    import dataclasses
+
+    pipeline_config = dataclasses.replace(
+        pipeline_config,
+        stream=dataclasses.replace(
+            pipeline_config.stream, duration_seconds=1, flush_interval_seconds=0.1
+        ),
+    )
+    # Seed a price history so live features have warm state.
+    storage = LayeredStorage(
+        pipeline_config.paths.raw_data_dir,
+        pipeline_config.paths.intermediate_data_dir,
+        pipeline_config.paths.output_dir,
+    )
+    import pandas as pd
+
+    dates = pd.date_range("2026-01-02", periods=40, freq="B").strftime("%Y-%m-%d")
+    rows = [
+        {
+            "event_date": d, "symbol": "AAPL", "con_id": 1, "exchange": "SMART",
+            "currency": "USD", "open": 100.0 + i, "high": 101.0 + i, "low": 99.0 + i,
+            "close": 100.5 + i, "volume": 1000.0, "bar_count": 5, "wap": 100.2 + i,
+        }
+        for i, d in enumerate(dates)
+    ]
+    storage.write_prices(rows, {"symbol": "AAPL"}, "2026-07-24T00:00:00+00:00", "seed")
+
+    client = FakeStreamClient(
+        [
+            [_tick("AAPL", "last", 150.0), _tick("AAPL", "bid", 149.9)],
+            [],                                   # a quiet interval writes nothing
+            [_tick("AAPL", "last", 151.0)],
+        ]
+    )
+    runner = PipelineRunner(
+        config=pipeline_config,
+        client=client,
+        storage=storage,
+        checkpoint=CheckpointStore(pipeline_config.paths.checkpoint_file),
+        now_fn=lambda: datetime(2026, 7, 25, 14, 5, tzinfo=timezone.utc),
+        sleep_fn=lambda _s: None,
+    )
+    result = runner.run_stream_pipeline()
+
+    assert client.started[0] == list(pipeline_config.stream.symbols)
+    assert client.connect_count == 1 and client.disconnect_count == 1
+    assert client.stopped == 1                      # subscription cancelled on exit
+    assert result["ticks"] == 3                     # quiet interval contributed nothing
+    assert result["flushes"] == 2                   # only non-empty drains flush
+    assert result["quote_rows"] >= 3
+    assert result["live_feature_rows"] > 0
+
+    live = list(
+        (tmp_path / "final" / "indicators_live").glob(
+            "event_year=*/symbol=*/part-000.parquet"
+        )
+    ) if (tmp_path / "final").exists() else list(
+        (storage.final_dir / "indicators_live").glob(
+            "event_year=*/symbol=*/part-000.parquet"
+        )
+    )
+    assert live, "expected provisional live indicators on disk"
+    frame = pd.read_parquet(live[0])
+    # The last flush wins: the newest streamed price drives the provisional row.
+    assert bool(frame.iloc[-1]["provisional"]) is True

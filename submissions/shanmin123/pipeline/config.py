@@ -50,6 +50,7 @@ class StreamConfig:
     symbols: tuple
     duration_seconds: int
     market_data_type: int
+    flush_interval_seconds: float
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,9 @@ def load_config(path):
             stream_data.get("duration_seconds", 60), "duration_seconds"
         ),
         market_data_type=int(stream_data.get("market_data_type", 3)),
+        flush_interval_seconds=max(
+            float(stream_data.get("flush_interval_seconds", 5.0)), 0.1
+        ),
     )
     return PipelineConfig(
         ib=ib,

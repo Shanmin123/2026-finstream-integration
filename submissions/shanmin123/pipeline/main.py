@@ -26,6 +26,10 @@ def build_parser():
     subparsers.add_parser("collect-news", help="Collect news headlines.")
     subparsers.add_parser("run-all", help="Collect prices and news.")
     subparsers.add_parser(
+        "stream-pipeline",
+        help="Run the continuous streaming pipeline (quotes -> live features) until stopped.",
+    )
+    subparsers.add_parser(
         "stream-quotes",
         help="Stream delayed quote ticks for stream.symbols and persist them.",
     )
@@ -70,6 +74,7 @@ def main(argv=None):
         "collect-news": runner.run_news,
         "run-all": runner.run_all,
         "compute-features": runner.run_features,
+        "stream-pipeline": runner.run_stream_pipeline,
         "stream-quotes": runner.run_stream,
         "compute-live-features": runner.run_live_features,
     }

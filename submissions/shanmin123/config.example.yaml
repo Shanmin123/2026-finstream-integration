@@ -40,6 +40,8 @@ stream:
     - "MSFT"
   duration_seconds: 60
   market_data_type: 3
+  # stream-pipeline: micro-batch write cadence; duration_seconds 0 = run until stopped.
+  flush_interval_seconds: 5
 
 run:
   max_retries: 3

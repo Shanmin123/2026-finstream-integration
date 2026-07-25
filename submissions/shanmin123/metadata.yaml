@@ -26,7 +26,10 @@ output:
   format: >-
     Raw JSONL; normalised and final Apache Parquet (prices, news, plus derived
     indicators, alphas, streaming quotes, and provisional live-feature datasets)
-  update_frequency: "Configurable; intended for daily scheduled collection"
+  update_frequency: >-
+    Continuous for quotes and live features (stream-pipeline, micro-batched at
+    the configured flush interval); daily scheduled collection for prices, news,
+    and the batch indicator/alpha datasets
 
 storage_policy:
   raw_data_location: >-
