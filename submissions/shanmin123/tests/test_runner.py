@@ -144,3 +144,28 @@ def test_smoke_test_is_read_only_and_reports_prices_and_news(pipeline_config):
         "headline_rows": 1,
     }
     assert not pipeline_config.paths.checkpoint_file.exists()
+
+
+def test_inter_symbol_throttle_sleeps_between_symbols(pipeline_config):
+    # Full-universe sweeps must pace politely: with N symbols the runner sleeps
+    # N-1 times (never before the first request).
+    client = FakeClient()
+    storage = LayeredStorage(
+        pipeline_config.paths.raw_data_dir,
+        pipeline_config.paths.intermediate_data_dir,
+        pipeline_config.paths.output_dir,
+    )
+    sleeps = []
+    runner = PipelineRunner(
+        config=pipeline_config,
+        client=client,
+        storage=storage,
+        checkpoint=CheckpointStore(pipeline_config.paths.checkpoint_file),
+        now_fn=lambda: datetime(2025, 1, 3, tzinfo=timezone.utc),
+        sleep_fn=sleeps.append,
+    )
+    runner.run_prices()
+    n_symbols = len(pipeline_config.prices.symbols)
+    delay = pipeline_config.run.symbol_delay_seconds
+    expected = [delay] * (n_symbols - 1) if delay > 0 else []
+    assert sleeps == expected

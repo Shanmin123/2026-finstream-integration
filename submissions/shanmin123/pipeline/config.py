@@ -50,6 +50,7 @@ class RunConfig:
     max_retries: int
     retry_delay_seconds: float
     continue_on_error: bool
+    symbol_delay_seconds: float
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,9 @@ def load_config(path):
         max_retries=_positive_int(run_data.get("max_retries", 3), "max_retries"),
         retry_delay_seconds=max(float(run_data.get("retry_delay_seconds", 2)), 0.0),
         continue_on_error=bool(run_data.get("continue_on_error", True)),
+        symbol_delay_seconds=max(
+            float(run_data.get("symbol_delay_seconds", 1.0)), 0.0
+        ),
     )
     return PipelineConfig(
         ib=ib,

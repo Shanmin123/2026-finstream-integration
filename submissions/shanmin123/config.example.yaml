@@ -14,6 +14,8 @@ paths:
   log_dir: "./logs"
 
 prices:
+  # symbols.example.csv = 2-name demo; symbols.sp500.csv = full S&P 500
+  # (2000-2025 membership still trading, derived from the FINSABER dataset).
   symbols_file: "./symbols.example.csv"
   duration: "5 Y"
   use_rth: true
@@ -34,3 +36,5 @@ run:
   max_retries: 3
   retry_delay_seconds: 5
   continue_on_error: true
+  # Pause between symbols; keeps a full S&P-500 sweep under IBKR pacing limits.
+  symbol_delay_seconds: 1.0

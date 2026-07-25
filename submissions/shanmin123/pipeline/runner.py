@@ -88,7 +88,11 @@ class PipelineRunner:
     def _collect_prices(self):
         summary = {"written": 0, "errors": []}
         state = self.checkpoint.load()
-        for symbol in self.config.prices.symbols:
+        for index, symbol in enumerate(self.config.prices.symbols):
+            if index and self.config.run.symbol_delay_seconds > 0:
+                # Polite inter-symbol pacing so a full S&P-500 sweep stays well
+                # under IBKR historical-data pacing limits.
+                self.sleep_fn(self.config.run.symbol_delay_seconds)
             duration = self._price_duration(state, symbol)
             request = {
                 "symbol": symbol,
@@ -142,7 +146,9 @@ class PipelineRunner:
     def _collect_news(self):
         summary = {"written": 0, "errors": []}
         state = self.checkpoint.load()
-        for symbol in self.config.news.symbols:
+        for index, symbol in enumerate(self.config.news.symbols):
+            if index and self.config.run.symbol_delay_seconds > 0:
+                self.sleep_fn(self.config.run.symbol_delay_seconds)
             now = self._utc_now()
             start = self._news_start(state, symbol, now)
             request = {
