@@ -375,6 +375,12 @@ class PipelineRunner:
                     self.sleep_fn(nap)
                     flush()
                     if deadline is not None and time.time() >= deadline:
+                        # Same terminal check as the capture loop: a rejection
+                        # during the final interval must not be lost to the
+                        # deadline.
+                        error = getattr(self.client, "stream_error", lambda: None)()
+                        if error is not None:
+                            raise error
                         break
             except KeyboardInterrupt:
                 self.logger.info(

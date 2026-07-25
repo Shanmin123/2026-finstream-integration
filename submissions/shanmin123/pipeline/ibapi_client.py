@@ -343,17 +343,19 @@ class IBApiClient(EWrapper, EClient):
         return rows
 
     def stream_error(self):
-        """The first error IB reported against a live subscription, if any.
+        """The first error that invalidates the live stream, if any.
 
-        Market-data rejections (e.g. 354, not subscribed) arrive on the request
-        id rather than as an exception, so without this a run would sit through
-        its whole duration and report success with zero ticks.
+        Two kinds arrive without raising: market-data rejections (e.g. 354, not
+        subscribed) are reported against the subscription's request id, and a
+        dropped Gateway session (1100/502/504) is reported globally. Neither
+        would otherwise stop a run, which would then report success having
+        collected nothing.
         """
         for request_id in getattr(self, "_stream_request_ids", []):
             error = self._errors.get(request_id)
             if error is not None:
                 return error
-        return None
+        return self._connection_error
 
     def stop_quote_stream(self):
         for request_id in getattr(self, "_stream_request_ids", []):
@@ -379,6 +381,12 @@ class IBApiClient(EWrapper, EClient):
                 nap = 0.25 if deadline is None else min(0.25, deadline - time.time())
                 if nap > 0:
                     time.sleep(nap)
+            # The deadline is about to end the loop, so check once more: an
+            # error raised during the final sleep would otherwise be discarded
+            # by the shutdown that follows.
+            error = self.stream_error()
+            if error is not None:
+                raise error
         except KeyboardInterrupt:
             # Stopping an unbounded capture is the documented way to end it, so
             # it returns what it collected rather than propagating and losing it.

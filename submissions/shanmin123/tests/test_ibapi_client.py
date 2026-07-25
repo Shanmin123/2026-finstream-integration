@@ -229,3 +229,41 @@ def test_rejected_subscription_raises_instead_of_reporting_zero_ticks(monkeypatc
     monkeypatch.setattr("pipeline.ibapi_client.time.sleep", reject)
     with pytest.raises(IBRequestError, match="354"):
         client.stream_quotes(["AAPL"], 5)
+
+
+def test_connection_loss_stops_a_stream_instead_of_reporting_success(monkeypatch):
+    """A dropped Gateway session is reported globally (1100), not against the
+    subscription, so a stream would otherwise run on collecting nothing."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+    monkeypatch.setattr(client, "cancelMktData", lambda _r: None)
+
+    def drop(_seconds):
+        client.error(-1, 1100, "Connectivity between IB and TWS has been lost")
+
+    monkeypatch.setattr("pipeline.ibapi_client.time.sleep", drop)
+    with pytest.raises(IBRequestError, match="1100"):
+        client.stream_quotes(["AAPL"], 5)
+
+
+def test_error_during_the_final_interval_is_not_lost_to_the_deadline(monkeypatch):
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+    monkeypatch.setattr(client, "cancelMktData", lambda _r: None)
+
+    import time as _time
+
+    real_sleep = _time.sleep
+
+    def reject_then_expire(seconds):
+        # Arrive during the sleep that exhausts the run's duration.
+        client.error(client._stream_request_ids[0], 354, "not subscribed")
+        real_sleep(seconds)
+
+    monkeypatch.setattr("pipeline.ibapi_client.time.sleep", reject_then_expire)
+    with pytest.raises(IBRequestError, match="354"):
+        client.stream_quotes(["AAPL"], 0.05)
