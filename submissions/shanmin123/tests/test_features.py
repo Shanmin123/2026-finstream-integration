@@ -297,3 +297,35 @@ def test_wilder_leaves_a_missing_observation_unknown():
     assert out.iloc[13] == pytest.approx(1.0)     # seeded
     assert pd.isna(out.iloc[14])                  # the gap stays unknown
     assert out.iloc[15] == pytest.approx(1.0)     # and the series resumes
+
+
+def test_alpha_9_is_undefined_until_its_five_delta_window_exists():
+    # Before five deltas exist both rolling comparisons are False on NaN, which
+    # would emit the -delta branch as if the condition had been evaluated.
+    frame = _prices(n=10)
+    alpha_9 = compute_alphas(frame, COMPUTED_AT)["alpha_9"]
+    assert alpha_9.head(5).isna().all()
+    assert not pd.isna(alpha_9.iloc[5])
+
+
+def test_cumulative_and_recursive_indicators_need_full_history():
+    # OBV is cumulative and EMA/Wilder are recursive, so truncating the warm
+    # window silently changes them: this pins that the live path must not.
+    frame = _prices(n=500)
+    full = compute_indicators(frame, COMPUTED_AT).iloc[-1]
+    truncated = compute_indicators(frame.tail(300).reset_index(drop=True), COMPUTED_AT).iloc[-1]
+    assert full["obv"] != pytest.approx(truncated["obv"])
+
+
+def test_wilder_resumes_from_the_pre_gap_average_not_a_fresh_seed():
+    # An all-ones fixture would also pass if the smoother reset after a gap;
+    # a level shift before the gap makes the two behaviours distinguishable.
+    from pipeline.features import _wilder_smooth
+
+    values = pd.Series([10.0] * 14 + [np.nan, 0.0])
+    out = _wilder_smooth(values, 14)
+    seeded = out.iloc[13]
+    assert seeded == pytest.approx(10.0)
+    assert pd.isna(out.iloc[14])
+    # Resuming from the carried average gives (10*13 + 0)/14; a fresh seed would not.
+    assert out.iloc[15] == pytest.approx(seeded * 13 / 14)

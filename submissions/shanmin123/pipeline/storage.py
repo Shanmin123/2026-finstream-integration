@@ -244,11 +244,17 @@ class LayeredStorage:
         if frame.empty:
             return {}
         frame = frame.copy()
-        frame["event_date"] = (
-            frame["session_date"].astype(str)
-            if "session_date" in frame
-            else frame["tick_time_utc"].astype(str).str[:10]
-        )
+        # Legacy partitions predate session_date; fill from the receipt date
+        # BEFORE stringifying, or a null becomes the literal "nan" and wins the
+        # lexical max() over a real date.
+        fallback = frame["tick_time_utc"].astype(str).str[:10]
+        if "session_date" in frame:
+            frame["event_date"] = frame["session_date"].fillna(fallback).astype(str)
+            frame.loc[frame["event_date"].isin(("nan", "None", "NaT")), "event_date"] = (
+                fallback
+            )
+        else:
+            frame["event_date"] = fallback
         bars = {}
         for symbol, symbol_frame in frame.groupby("symbol"):
             # One session only: mixing today's last with yesterday's high would

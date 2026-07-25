@@ -349,12 +349,18 @@ class IBApiClient(EWrapper, EClient):
         self._stream_request_ids = []
 
     def stream_quotes(self, symbols, duration_seconds, market_data_type=3):
-        """Collect ticks for a fixed window (batch wrapper over the stream primitives)."""
+        """Collect ticks for a fixed window (batch wrapper over the stream primitives).
+
+        ``duration_seconds`` of 0 means unbounded, matching the streaming
+        pipeline, and the poll never sleeps past a bounded deadline.
+        """
         self.start_quote_stream(symbols, market_data_type=market_data_type)
         try:
-            deadline = time.time() + duration_seconds
-            while time.time() < deadline:
-                time.sleep(0.25)
+            deadline = time.time() + duration_seconds if duration_seconds else None
+            while deadline is None or time.time() < deadline:
+                nap = 0.25 if deadline is None else min(0.25, deadline - time.time())
+                if nap > 0:
+                    time.sleep(nap)
         finally:
             self.stop_quote_stream()
         return self.drain_ticks()

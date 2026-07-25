@@ -134,3 +134,18 @@ def test_raw_microbatches_within_one_second_do_not_overwrite(tmp_path):
     )
     assert first.raw_path != second.raw_path
     assert first.raw_path.exists() and second.raw_path.exists()
+
+
+def test_legacy_quotes_without_session_date_do_not_win_the_session_max(tmp_path):
+    """A null session_date stringified to "nan" and beat a real date in max(),
+    returning a stale bar under event_date="nan"."""
+    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
+    legacy = {"tick_time_utc": "2026-07-24T20:00:00+00:00", "symbol": "AAPL",
+              "field": "last", "value": 200.0}                      # no session_date
+    current = {"tick_time_utc": "2026-07-25T14:00:00+00:00", "session_date": "2026-07-25",
+               "symbol": "AAPL", "field": "last", "value": 250.0}
+    storage.write_quotes([legacy], {}, "2026-07-24T20:01:00+00:00", "legacy")
+    storage.write_quotes([current], {}, "2026-07-25T14:01:00+00:00", "current")
+    bar = storage.read_latest_quote_bars()["AAPL"]
+    assert bar["event_date"] == "2026-07-25"
+    assert bar["close"] == 250.0

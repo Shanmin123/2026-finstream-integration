@@ -187,8 +187,12 @@ def compute_alphas(prices, computed_at_utc):
         #          elif ts_max(delta(close,1),5) < 0 then delta(close,1)
         #          else -1*delta(close,1)
         d1 = _delta(close, 1)
-        keep = (d1.rolling(5).min() > 0) | (d1.rolling(5).max() < 0)
-        out["alpha_9"] = d1.where(keep, -1.0 * d1)
+        window_min = d1.rolling(5).min()
+        window_max = d1.rolling(5).max()
+        keep = (window_min > 0) | (window_max < 0)
+        # Before five deltas exist both comparisons are False on NaN, which would
+        # emit the -delta branch as if the condition had been evaluated.
+        out["alpha_9"] = d1.where(keep, -1.0 * d1).where(window_min.notna())
 
         # alpha_12: sign(delta(volume,1)) * (-1 * delta(close,1))
         out["alpha_12"] = np.sign(_delta(volume, 1)) * (-1.0 * d1)

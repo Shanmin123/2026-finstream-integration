@@ -202,9 +202,17 @@ def load_config(path):
     # that never streams does not have to carry a stream block.
     stream_symbols = tuple(stream_data.get("symbols") or ())
     # 0 is the documented "run until stopped" mode, so this is not _positive_int.
-    stream_duration = int(stream_data.get("duration_seconds", 60))
-    if stream_duration < 0:
+    # Validate before int(), or -0.5 truncates to 0 and silently becomes unbounded.
+    raw_duration = stream_data.get("duration_seconds", 60)
+    try:
+        duration_value = float(raw_duration)
+    except (TypeError, ValueError):
+        raise ConfigError("stream.duration_seconds must be a number")
+    if duration_value < 0:
         raise ConfigError("stream.duration_seconds must be 0 (unbounded) or positive")
+    if duration_value != int(duration_value):
+        raise ConfigError("stream.duration_seconds must be a whole number of seconds")
+    stream_duration = int(duration_value)
     stream = StreamConfig(
         symbols=stream_symbols,
         duration_seconds=stream_duration,

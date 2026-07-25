@@ -90,3 +90,22 @@ def test_negative_stream_duration_is_rejected(tmp_path):
     path.write_text(yaml.safe_dump(base), encoding="utf-8")
     with _pytest.raises(ConfigError):
         load_config(str(path))
+
+
+def test_fractional_and_negative_fractional_durations_are_rejected(tmp_path):
+    # int() truncation turned -0.5 into 0, silently promoting a rejected value
+    # into the unbounded mode.
+    import pytest as _pytest
+    import yaml
+
+    from pipeline.config import ConfigError, load_config
+
+    for bad in (-0.5, 0.5, 1.9):
+        base = yaml.safe_load(open("config.example.yaml", encoding="utf-8"))
+        base["stream"]["duration_seconds"] = bad
+        base["prices"]["symbols"] = ["AAPL"]
+        base["prices"].pop("symbols_file", None)
+        path = tmp_path / ("c%s.yaml" % str(bad).replace(".", "_").replace("-", "m"))
+        path.write_text(yaml.safe_dump(base), encoding="utf-8")
+        with _pytest.raises(ConfigError):
+            load_config(str(path))

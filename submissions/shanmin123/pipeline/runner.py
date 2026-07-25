@@ -1,9 +1,5 @@
 import logging
 import time
-
-#: Trailing rows kept warm per symbol for the live recomputation. The longest
-#: lookback in features.py is the 252-day z-score history plus its window.
-WARM_HISTORY_ROWS = 300
 from datetime import datetime, timedelta, timezone
 
 
@@ -263,15 +259,11 @@ class PipelineRunner:
             raise RuntimeError(
                 "No final prices found. Run collect-prices before stream-pipeline."
             )
-        # The longest lookback any indicator or alpha uses is well under a year;
-        # keeping the whole multi-year history in the per-flush recomputation
-        # made a full-universe refresh slower than the flush interval.
-        warm = (
-            prices.sort_values(["symbol", "event_date"])
-            .groupby("symbol", sort=False)
-            .tail(WARM_HISTORY_ROWS)
-            .reset_index(drop=True)
-        )
+        # Full history is kept on purpose: OBV is cumulative and EMA/MACD and
+        # Wilder RSI/ATR are recursive, so a bounded window silently changes
+        # their values. The per-flush cost is controlled by only recomputing
+        # the symbols that ticked, not by truncating their history.
+        warm = prices
         cfg = self.config.stream
         symbols = list(cfg.symbols)
         if not symbols:
@@ -331,6 +323,16 @@ class PipelineRunner:
             # panel made every flush sort and group all 658 symbols, which on a
             # full universe costs more than the flush interval itself.
             subset = warm[warm["symbol"].isin(priced)]
+            missing = sorted(set(priced) - set(subset["symbol"].unique()))
+            if missing:
+                self.logger.warning(
+                    "live_features_without_price_history",
+                    extra={
+                        "dataset": "indicators_live",
+                        "symbol": ",".join(missing),
+                        "rows": 0,
+                    },
+                )
             live_i, live_a = compute_live_features(subset, priced, now.isoformat())
             for dataset, frame in (
                 ("indicators_live", live_i),
@@ -369,6 +371,8 @@ class PipelineRunner:
                         nap = min(nap, max(0.0, deadline - time.time()))
                     self.sleep_fn(nap)
                     flush()
+                    if deadline is not None and time.time() >= deadline:
+                        break
             except KeyboardInterrupt:
                 self.logger.info(
                     "stream_interrupted",

@@ -161,9 +161,9 @@ Known limits, recorded rather than hidden:
   forward-computed values are unaffected.
 * Each flush rewrites the affected symbol/day quote partition, so per-flush cost
   grows with the day's tick count for a symbol.
-* The live recomputation is scoped to the symbols that ticked in that interval
-  and to a bounded warm window, which keeps a normal flush well inside the
-  interval (measured on the 658-symbol panel: 0.09s for 2 moved symbols, 0.65s
-  for 20, 2.8s for 100). If nearly the whole universe ticks inside one interval
-  the work approaches ~18s, so a large universe wants a flush interval sized
-  accordingly.
+* The live recomputation is scoped to the symbols that ticked in that interval,
+  over their FULL history: OBV is cumulative and EMA/MACD and Wilder RSI/ATR are
+  recursive, so a bounded warm window would silently change their values.
+  Measured on the 658-symbol panel: 0.11s for 2 moved symbols, 0.88s for 20,
+  4.2s for 100. If nearly the whole universe ticks inside one interval the work
+  grows proportionally, so a large universe wants a flush interval sized to it.

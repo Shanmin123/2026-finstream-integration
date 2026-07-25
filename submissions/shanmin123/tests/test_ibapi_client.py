@@ -176,3 +176,14 @@ def test_stream_tick_callbacks_record_rows_with_field_names():
     client.tickPrice(8888, 4, 1.0, None)         # unknown request ignored
     fields = [(r["symbol"], r["field"], r["value"]) for r in client._stream_rows]
     assert fields == [("AAPL", "last", 250.25), ("AAPL", "bid", 250.10), ("AAPL", "volume", 12345.0)]
+
+
+def test_session_date_is_exchange_local_not_the_utc_receipt_date():
+    from datetime import datetime, timezone
+
+    from pipeline.ibapi_client import session_date_of
+
+    # 00:30 UTC in January is 19:30 the previous day in New York.
+    assert session_date_of(datetime(2026, 1, 6, 0, 30, tzinfo=timezone.utc)) == "2026-01-05"
+    # Mid-session stays on the same date.
+    assert session_date_of(datetime(2026, 1, 6, 15, 0, tzinfo=timezone.utc)) == "2026-01-06"
