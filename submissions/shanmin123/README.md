@@ -126,6 +126,27 @@ market-data subscriptions the same process streams real time
 state that needs no Gateway). They share the pipeline's code and are useful for
 backfill and testing.
 
+## Platform integration
+
+Airflow DAGs live in `pipeline/airflow/dags/`:
+
+* `ibkr_prices_dag.py` — daily collection, feature derivation, and an upsert of
+  the bars into the platform's PostgreSQL `price_data` table with
+  `source='ibkr'` and the platform's own conflict key
+  `(ticker, timestamp_ms, interval)`. The universe is read from
+  `companies.is_active` so the DAG does not hardcode a list, falling back to the
+  configured symbols file when the database is unreachable.
+* `ibkr_stream_dag.py` — the continuous streaming pipeline as a bounded task.
+
+Both are `schedule=None` pending lab bring-up, and point at
+`IBKR_PIPELINE_CONFIG` (default `/opt/airflow/config/ibkr.yaml`). psycopg2 is an
+optional dependency: without a database the pipeline still produces every
+parquet dataset.
+
+Open with the integration team: streamed quotes and the derived
+indicator/alpha datasets have no platform table yet, so they remain parquet
+until a schema is agreed.
+
 ## Universe note
 
 `symbols.sp500.csv` is a point-in-time snapshot (S&P 500 membership 2000-2025,
