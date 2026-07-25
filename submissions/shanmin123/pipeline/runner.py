@@ -202,6 +202,38 @@ class PipelineRunner:
                     raise
         return summary
 
+    def run_stream(self):
+        def stream():
+            rows = self.client.stream_quotes(
+                self.config.stream.symbols,
+                self.config.stream.duration_seconds,
+                market_data_type=self.config.stream.market_data_type,
+            )
+            retrieved_at = self._utc_now()
+            request = {
+                "symbols": list(self.config.stream.symbols),
+                "duration_seconds": self.config.stream.duration_seconds,
+                "market_data_type": self.config.stream.market_data_type,
+            }
+            result = self.storage.write_quotes(
+                rows,
+                request,
+                retrieved_at.isoformat(),
+                self._run_id("quotes", "stream", retrieved_at),
+            )
+            self.logger.info(
+                "dataset_write_complete",
+                extra={"dataset": "quotes", "symbol": "*", "rows": result.final_rows},
+            )
+            return {
+                "tick_rows": len(rows),
+                "final_rows": result.final_rows,
+                "symbols": list(self.config.stream.symbols),
+                "duration_seconds": self.config.stream.duration_seconds,
+            }
+
+        return self._run_connected(stream)
+
     def run_features(self):
         """Compute technical indicators and the Alpha101 subset (offline).
 

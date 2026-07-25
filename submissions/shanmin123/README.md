@@ -98,12 +98,18 @@ python -m pipeline.main --config config.yaml collect-prices
 python -m pipeline.main --config config.yaml collect-news
 python -m pipeline.main --config config.yaml run-all
 python -m pipeline.main --config config.yaml compute-features
+python -m pipeline.main --config config.yaml stream-quotes
 ```
 
 `smoke-test` performs read-only AAPL-style price and news checks without writing
 data or advancing checkpoints. `run-all` opens one Gateway connection and runs
 both production collectors. `compute-features` needs no Gateway: it reads the
 final prices dataset and writes the indicators and alphas datasets.
+`stream-quotes` streams quote ticks for `stream.symbols` for
+`stream.duration_seconds` per invocation and appends them to the quotes
+dataset. The free paper tier streams delayed data (15-20 minutes behind);
+with market-data subscriptions the same command streams real time
+(`stream.market_data_type: 1`). Schedule it in a loop for a continuous feed.
 
 ## Universe note
 

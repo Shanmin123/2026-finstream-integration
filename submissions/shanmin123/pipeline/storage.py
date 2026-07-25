@@ -234,6 +234,45 @@ class LayeredStorage:
             final_paths=final_paths,
         )
 
+    QUOTE_COLUMNS = ("tick_time_utc", "symbol", "field", "value", "retrieved_at_utc")
+
+    def write_quotes(self, rows, request, retrieved_at_utc, run_id):
+        raw_path = self._write_raw("quotes", rows, request, retrieved_at_utc, run_id)
+        frame = pd.DataFrame(rows, columns=list(self.QUOTE_COLUMNS[:-1])) if rows else pd.DataFrame(columns=list(self.QUOTE_COLUMNS))
+        final_paths = []
+        final_rows = 0
+        if not frame.empty:
+            frame = frame.copy()
+            frame["retrieved_at_utc"] = _iso_utc(retrieved_at_utc)
+            frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+            frame = frame.loc[:, list(self.QUOTE_COLUMNS)].drop_duplicates(
+                subset=["symbol", "tick_time_utc", "field"], keep="last"
+            )
+            dates = frame["tick_time_utc"].str[:10]
+            for (event_date, symbol), part in frame.groupby([dates, frame["symbol"]], sort=True):
+                final_path = (
+                    self.final_dir
+                    / "quotes"
+                    / ("event_date=" + str(event_date))
+                    / ("symbol=" + _safe_component(symbol))
+                    / "part-000.parquet"
+                )
+                merged = _merge_partition(
+                    final_path,
+                    part,
+                    ("symbol", "tick_time_utc", "field"),
+                    "retrieved_at_utc",
+                )
+                final_paths.append(final_path)
+                final_rows += len(merged)
+        return WriteResult(
+            input_rows=len(rows),
+            final_rows=final_rows,
+            raw_path=raw_path,
+            intermediate_paths=[],
+            final_paths=final_paths,
+        )
+
     def write_news(self, rows, request, retrieved_at_utc, run_id):
         raw_path = self._write_raw("news", rows, request, retrieved_at_utc, run_id)
         frame = self._normalize_news(rows, retrieved_at_utc)

@@ -1,5 +1,6 @@
 import re
 import threading
+import time
 from datetime import datetime, timezone
 
 from ibapi.client import EClient
@@ -296,6 +297,63 @@ class IBApiClient(EWrapper, EClient):
             # ibapi 9.81 exposes the weighted average price as `average`; 10.x as `wap`.
             "wap": getattr(bar, "wap", getattr(bar, "average", None)),
         }
+
+    def stream_quotes(self, symbols, duration_seconds, market_data_type=3):
+        """Stream quote ticks for ``symbols`` for ``duration_seconds``.
+
+        Uses reqMktData streaming. market_data_type 3 = delayed (the free paper
+        tier, 15-20 minutes behind); with live market-data subscriptions the
+        same call streams real time (type 1). Returns the collected tick rows.
+        """
+        self.reqMarketDataType(market_data_type)
+        self._stream_rows = []
+        self._stream_symbols = {}
+        request_ids = []
+        for symbol in symbols:
+            contract = self.resolve_stock_contract(symbol)
+            request_id = self._new_request()
+            self._stream_symbols[request_id] = symbol
+            request_ids.append(request_id)
+            self.reqMktData(request_id, contract, "", False, False, [])
+        try:
+            deadline = time.time() + duration_seconds
+            while time.time() < deadline:
+                time.sleep(0.25)
+        finally:
+            for request_id in request_ids:
+                self.cancelMktData(request_id)
+                self._stream_symbols.pop(request_id, None)
+        rows = self._stream_rows
+        self._stream_rows = []
+        return rows
+
+    _TICK_PRICE_FIELDS = {
+        1: "bid", 2: "ask", 4: "last", 6: "high", 7: "low", 9: "close",
+        66: "bid", 67: "ask", 68: "last", 72: "high", 73: "low", 75: "close",
+    }
+    _TICK_SIZE_FIELDS = {
+        0: "bid_size", 3: "ask_size", 5: "last_size", 8: "volume",
+        69: "bid_size", 70: "ask_size", 71: "last_size", 74: "volume",
+    }
+
+    def tickPrice(self, reqId, tickType, price, attrib):
+        self._record_tick(reqId, self._TICK_PRICE_FIELDS.get(tickType), price)
+
+    def tickSize(self, reqId, tickType, size):
+        self._record_tick(reqId, self._TICK_SIZE_FIELDS.get(tickType), size)
+
+    def _record_tick(self, request_id, field, value):
+        symbol = getattr(self, "_stream_symbols", {}).get(request_id)
+        if symbol is None or field is None or value in (None, -1):
+            return
+        self._stream_rows.append(
+            {
+                "tick_time_utc": datetime.now(timezone.utc).isoformat(),
+                "symbol": symbol,
+                "field": field,
+                "value": float(value),
+            }
+        )
 
     @staticmethod
     def _parse_news_time(value):

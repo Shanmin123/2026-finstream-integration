@@ -46,6 +46,13 @@ class NewsConfig:
 
 
 @dataclass(frozen=True)
+class StreamConfig:
+    symbols: tuple
+    duration_seconds: int
+    market_data_type: int
+
+
+@dataclass(frozen=True)
 class RunConfig:
     max_retries: int
     retry_delay_seconds: float
@@ -60,6 +67,7 @@ class PipelineConfig:
     prices: PricesConfig
     news: NewsConfig
     run: RunConfig
+    stream: StreamConfig
     config_path: Path
 
 
@@ -187,8 +195,17 @@ def load_config(path):
             float(run_data.get("symbol_delay_seconds", 1.0)), 0.0
         ),
     )
+    stream_data = data.get("stream") or {}
+    stream = StreamConfig(
+        symbols=tuple(stream_data.get("symbols") or ("AAPL",)),
+        duration_seconds=_positive_int(
+            stream_data.get("duration_seconds", 60), "duration_seconds"
+        ),
+        market_data_type=int(stream_data.get("market_data_type", 3)),
+    )
     return PipelineConfig(
         ib=ib,
+        stream=stream,
         paths=paths,
         prices=prices,
         news=news,

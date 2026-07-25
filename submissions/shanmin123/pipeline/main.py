@@ -26,6 +26,10 @@ def build_parser():
     subparsers.add_parser("collect-news", help="Collect news headlines.")
     subparsers.add_parser("run-all", help="Collect prices and news.")
     subparsers.add_parser(
+        "stream-quotes",
+        help="Stream delayed quote ticks for stream.symbols and persist them.",
+    )
+    subparsers.add_parser(
         "compute-features",
         help="Compute technical indicators and the Alpha101 subset from final prices.",
     )
@@ -62,6 +66,7 @@ def main(argv=None):
         "collect-news": runner.run_news,
         "run-all": runner.run_all,
         "compute-features": runner.run_features,
+        "stream-quotes": runner.run_stream,
     }
     try:
         result = commands[args.command]()

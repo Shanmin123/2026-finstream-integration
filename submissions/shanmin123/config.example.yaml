@@ -32,6 +32,15 @@ news:
   overlap_minutes: 5
   limit: 100
 
+stream:
+  # Streaming quotes via reqMktData. market_data_type 3 = delayed (free paper
+  # tier, 15-20 min behind); 1 = real time once market-data subscriptions exist.
+  symbols:
+    - "AAPL"
+    - "MSFT"
+  duration_seconds: 60
+  market_data_type: 3
+
 run:
   max_retries: 3
   retry_delay_seconds: 5

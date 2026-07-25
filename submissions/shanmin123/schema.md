@@ -100,3 +100,20 @@ Final partition path:
 The full 101-alpha set (external `alpha101` package, Python 3.13 environment)
 and Qlib Alpha158 remain in the research repository; this submission ships the
 production-contract-compatible subset.
+
+## Final Quotes Parquet (streaming)
+
+Deduplication key: `(symbol, tick_time_utc, field)`.
+
+| Column | Spark type | Description |
+| --- | --- | --- |
+| `tick_time_utc` | string | Tick receipt time, ISO 8601 UTC |
+| `symbol` | string | Requested stock symbol |
+| `field` | string | `last`, `bid`, `ask`, `close`, `high`, `low`, `last_size`, `bid_size`, `ask_size`, `volume` |
+| `value` | double | Tick value |
+| `retrieved_at_utc` | string | Stream-batch write timestamp, ISO 8601 UTC |
+
+Final partition path: `quotes/event_date=YYYY-MM-DD/symbol=SYMBOL/part-000.parquet`.
+Collected with `reqMktData` market data type 3 (delayed, the free paper tier,
+15-20 minutes behind); with live market-data subscriptions the same command
+streams real time (`stream.market_data_type: 1`).

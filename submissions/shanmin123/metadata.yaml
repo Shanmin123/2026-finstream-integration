@@ -25,7 +25,7 @@ output:
   schema: "schema.md"
   format: >-
     Raw JSONL; normalised and final Apache Parquet (prices, news, plus derived
-    indicators and alphas datasets)
+    indicators, alphas, and streaming quotes datasets)
   update_frequency: "Configurable; intended for daily scheduled collection"
 
 storage_policy:

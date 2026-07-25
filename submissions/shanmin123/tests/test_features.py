@@ -111,3 +111,19 @@ def test_write_derived_partitions_and_dedups(tmp_path):
         "indicators", frame, ("symbol", "event_date"), "computed_at_utc"
     )
     assert again.final_rows == 30
+
+
+def test_write_quotes_partitions_by_date_and_symbol(tmp_path):
+    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
+    rows = [
+        {"tick_time_utc": "2026-07-25T14:00:00+00:00", "symbol": "AAPL", "field": "last", "value": 250.1},
+        {"tick_time_utc": "2026-07-25T14:00:01+00:00", "symbol": "AAPL", "field": "bid", "value": 250.0},
+        {"tick_time_utc": "2026-07-25T14:00:01+00:00", "symbol": "MSFT", "field": "last", "value": 500.5},
+    ]
+    result = storage.write_quotes(rows, {"symbols": ["AAPL", "MSFT"]}, "2026-07-25T14:01:00+00:00", "quotes-test")
+    assert result.final_rows == 3
+    parts = list((tmp_path / "final" / "quotes").glob("event_date=*/symbol=*/part-000.parquet"))
+    assert len(parts) == 2                      # AAPL + MSFT partitions
+    again = storage.write_quotes(rows, {}, "2026-07-25T14:02:00+00:00", "quotes-test-2")
+    assert again.final_rows == 3                # dedup on (symbol, tick_time_utc, field)
+    assert result.raw_path.exists()

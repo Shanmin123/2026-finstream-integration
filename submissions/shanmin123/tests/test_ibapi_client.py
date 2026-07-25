@@ -163,3 +163,16 @@ def test_connect_does_not_start_network_thread_after_synchronous_socket_error(
         client.connect()
 
     assert client._network_thread is None
+
+
+def test_stream_tick_callbacks_record_rows_with_field_names():
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    client._stream_rows = []
+    client._stream_symbols = {9001: "AAPL"}
+    client.tickPrice(9001, 4, 250.25, None)      # 4 = last
+    client.tickPrice(9001, 66, 250.10, None)     # 66 = delayed bid
+    client.tickSize(9001, 8, 12345)              # 8 = volume
+    client.tickPrice(9001, 4, -1, None)          # -1 sentinel ignored
+    client.tickPrice(8888, 4, 1.0, None)         # unknown request ignored
+    fields = [(r["symbol"], r["field"], r["value"]) for r in client._stream_rows]
+    assert fields == [("AAPL", "last", 250.25), ("AAPL", "bid", 250.10), ("AAPL", "volume", 12345.0)]
