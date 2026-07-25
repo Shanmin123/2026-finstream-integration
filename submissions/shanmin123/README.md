@@ -33,6 +33,12 @@ Python 3.8 pipeline
 IBKR credentials are entered only in IB Gateway. They are not placed in the
 YAML file or passed to Python.
 
+Unlike the team's key-based cloud APIs (EODHD, GDELT), this is a local-session
+API: IBKR's hosted Web API requires a funded IBKR Pro account, so the free
+paper route runs against a logged-in Gateway on the collector host. The
+integration hand-off is therefore the pipeline's partitioned parquet output
+(synced to OneDrive / the shared database), not a callable remote endpoint.
+
 ## Environment
 
 The code and tests use Python 3.8 syntax and the library versions in

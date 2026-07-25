@@ -7,8 +7,11 @@ data_source:
 
 api:
   endpoint: >-
-    TWS API socket exposed by IB Gateway; reqContractDetails,
-    reqHistoricalData, reqNewsProviders, and reqHistoricalNews
+    TWS API socket exposed by a LOCAL IB Gateway session (default
+    127.0.0.1:4002); reqContractDetails, reqHistoricalData, reqNewsProviders,
+    and reqHistoricalNews. This is not a hosted REST endpoint: IBKR's cloud
+    Web API requires a funded IBKR Pro account, so the free paper route is
+    the TWS/Gateway socket only.
   auth_method: >-
     Interactive login in IB Gateway; the Python socket client uses host, port,
     and client ID and does not receive account credentials
@@ -43,6 +46,11 @@ storage_policy:
     from the configured local paths into the OneDrive folder above.
 
 notes: >-
+  Integration note: unlike key-based cloud APIs, this source needs a logged-in
+  IB Gateway paper session on the collector host (one active session per
+  username; periodic re-login). FinStream should therefore consume this
+  pipeline's partitioned parquet outputs (OneDrive/db hand-off) rather than
+  call IBKR directly from the orchestrator.
   GitHub contains code, schema, and synthetic samples only. News article bodies
   are not requested or stored. Account, order, and delayed snapshot checks are
   outside the persisted production datasets.
