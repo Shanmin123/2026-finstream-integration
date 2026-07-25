@@ -144,8 +144,8 @@ Both are `schedule=None` pending lab bring-up, and point at
 Deploying into the shared Airflow: the DAG tasks import this `pipeline` package,
 so copying the two DAG files alone is not enough — the package has to be
 importable by the workers. Either mount this submission directory and add it to
-`PYTHONPATH`, or `pip install` it into the worker image, alongside its
-`requirements.txt`. The worker also needs network access to a logged-in IB
+`PYTHONPATH`, or `pip install .` from this directory into the worker image (packaging
+metadata is in `pyproject.toml`). The worker also needs network access to a logged-in IB
 Gateway at `ib.host`/`ib.port`; the Gateway login itself is interactive and is
 not automated here.
 

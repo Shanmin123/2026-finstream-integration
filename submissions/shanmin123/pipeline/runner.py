@@ -150,12 +150,20 @@ class PipelineRunner:
             if index and self.config.run.symbol_delay_seconds > 0:
                 self.sleep_fn(self.config.run.symbol_delay_seconds)
             now = self._utc_now()
-            start = self._news_start(state, symbol, now)
+            # reqHistoricalNews paginates BACKWARDS from startDateTime: it
+            # returns up to `limit` headlines at or before it. Passing the
+            # checkpoint time as the start therefore walked further into the
+            # past on every run instead of collecting new items. Anchoring at
+            # "now" returns the most recent headlines available; incrementality
+            # comes from the article_id dedup in storage, and the checkpoint
+            # records how far the feed has actually advanced.
+            anchor = self._format_ib_time(now)
+            seen_after = self._news_start(state, symbol, now)
             request = {
                 "symbol": symbol,
                 "provider_codes": list(self.config.news.providers),
-                "start": self._format_ib_time(start),
-                "end": self._format_ib_time(now),
+                "start": anchor,
+                "end": anchor,
                 "limit": self.config.news.limit,
             }
             try:
@@ -181,6 +189,15 @@ class PipelineRunner:
                 )
                 if rows:
                     last_time = max(row["published_at_utc"] for row in rows)
+                    fresh = sum(
+                        1
+                        for row in rows
+                        if row["published_at_utc"] > seen_after.isoformat()
+                    )
+                    self.logger.info(
+                        "news_fetched",
+                        extra={"dataset": "news", "symbol": symbol, "rows": fresh},
+                    )
                     self.checkpoint.update_news(symbol, last_time)
                     state.setdefault("news", {})[symbol] = {
                         "last_published_at_utc": last_time
@@ -533,7 +550,12 @@ class PipelineRunner:
 
     @staticmethod
     def _format_ib_time(value):
-        return value.astimezone(timezone.utc).strftime("%Y%m%d %H:%M:%S")
+        # reqHistoricalNews takes "YYYY-MM-DD HH:MM:SS.0", not the compact
+        # historical-bar form. With the compact string IB ignored the window
+        # entirely and returned whatever it had (a request for 23-25 Jul 2026
+        # came back with headlines from Oct 2024), which silently broke the
+        # checkpoint/overlap contract.
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.0")
 
     @staticmethod
     def _run_id(dataset, symbol, value):

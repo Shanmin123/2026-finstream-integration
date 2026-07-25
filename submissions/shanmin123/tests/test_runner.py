@@ -128,7 +128,10 @@ def test_news_run_uses_checkpoint_overlap_and_advances_after_write(pipeline_conf
     summary = runner.run_news()
 
     assert summary["written"] == 1
-    assert client.news_calls[0]["start"] == "20250102 10:55:00"
+    # reqHistoricalNews paginates backwards from the start anchor, so both
+    # bounds are "now"; the checkpoint bounds storage, not the request.
+    assert client.news_calls[0]["start"] == "2025-01-03 00:00:00.0"
+    assert client.news_calls[0]["end"] == client.news_calls[0]["start"]
     state = checkpoint.load()
     assert state["news"]["AAPL"]["last_published_at_utc"] == "2025-01-02T12:00:00+00:00"
 
@@ -348,3 +351,14 @@ def test_stream_recomputes_only_symbols_that_ticked(pipeline_config, tmp_path):
     )
     live = storage.read_final_dataset("indicators_live")
     assert set(live["symbol"]) == {"AAA", "BBB"}
+
+
+def test_news_window_uses_the_format_reqhistoricalnews_accepts():
+    """IB ignored the compact bar-style timestamp and returned headlines far
+    outside the requested window; historical news wants YYYY-MM-DD HH:MM:SS.0."""
+    from pipeline.runner import PipelineRunner
+
+    formatted = PipelineRunner._format_ib_time(
+        datetime(2026, 7, 23, 2, 25, 50, tzinfo=timezone.utc)
+    )
+    assert formatted == "2026-07-23 02:25:50.0"

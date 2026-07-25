@@ -53,6 +53,15 @@ Final partition path:
 
 Article body text is not part of this schema.
 
+IBKR historical news paginates BACKWARDS: `reqHistoricalNews` returns up to
+`limit` headlines at or before its `startDateTime`, so the collector anchors both
+bounds at the current time to take the most recent available, and incrementality
+comes from the `(symbol, provider_code, article_id)` dedup rather than from a
+moving window. Availability on the default free provider set also lags: at the
+time of collection the newest AAPL headline from BRFG/BRFUPDN/DJNL was about
+three months old, so this feed complements rather than replaces the primary news
+source.
+
 ## Final Indicators Parquet
 
 Derived offline from the final prices dataset (`compute-features`).
