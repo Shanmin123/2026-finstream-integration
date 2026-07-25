@@ -62,6 +62,11 @@ time of collection the newest AAPL headline from BRFG/BRFUPDN/DJNL was about
 three months old, so this feed complements rather than replaces the primary news
 source.
 
+The same backwards pagination is what a deeper backfill would use: anchoring the
+request at the oldest headline already stored returns the ones before it, so the
+history can be walked back `limit` headlines at a time. The collector does not
+do this today — it keeps the feed current — but no API limitation prevents it.
+
 ## Final Indicators Parquet
 
 Derived offline from the final prices dataset (`compute-features`).
