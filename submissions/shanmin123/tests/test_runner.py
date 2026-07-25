@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from pipeline.checkpoint import CheckpointStore
 from pipeline.runner import PipelineRunner
 from pipeline.storage import LayeredStorage
@@ -320,10 +322,29 @@ def test_stream_recomputes_only_symbols_that_ticked(pipeline_config, tmp_path):
         now_fn=lambda: datetime(2026, 7, 25, 14, 5, tzinfo=timezone.utc),
         sleep_fn=lambda _s: None,
     )
-    result = runner.run_stream_pipeline()
+    # Observe what each flush actually recomputes: the stored dataset is
+    # deduplicated per symbol/date, so it cannot distinguish "BBB was skipped"
+    # from "BBB was recomputed and overwrote itself".
+    from pipeline.features import compute_live_features as real_compute
+
+    recomputed = []
+
+    def spy(prices, bars, as_of):
+        recomputed.append(sorted(bars))
+        assert set(prices["symbol"].unique()) <= set(bars), (
+            "the recomputation must be scoped to the symbols passed in"
+        )
+        return real_compute(prices, bars, as_of)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("pipeline.features.compute_live_features", spy)
+    try:
+        result = runner.run_stream_pipeline()
+    finally:
+        monkeypatch.undo()
     assert result["ticks"] == 3
-    # First flush wrote both symbols, the second only AAA: 3 feature rows per
-    # dataset, not 4 (BBB is not re-emitted with a newer as_of when it is quiet).
+    assert recomputed == [["AAA", "BBB"], ["AAA"]], (
+        "the second flush must recompute only the symbol that ticked"
+    )
     live = storage.read_final_dataset("indicators_live")
     assert set(live["symbol"]) == {"AAA", "BBB"}
-    assert len(live) == 2                       # one current row per symbol

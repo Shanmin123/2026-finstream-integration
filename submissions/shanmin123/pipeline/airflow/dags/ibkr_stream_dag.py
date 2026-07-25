@@ -58,6 +58,14 @@ def ibkr_stream():
         from pipeline.main import build_runner
 
         config = load_config(CONFIG_PATH)
+        if not config.stream.duration_seconds:
+            # An Airflow task has to end: with duration 0 the pipeline never
+            # returns, so the database-loading steps below would never run and
+            # max_active_runs=1 would block every later run.
+            raise ValueError(
+                "stream.duration_seconds must be positive for the Airflow task; "
+                "0 (run until stopped) is for the CLI only."
+            )
         runner = build_runner(config)
         summary = runner.run_stream_pipeline()
         from pipeline import db_sink

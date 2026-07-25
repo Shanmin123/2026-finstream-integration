@@ -76,7 +76,8 @@ def get_connection():
 
 
 def write_prices(rows, connection_factory=get_connection):
-    """Upsert daily bars into price_data. Returns the number of rows sent."""
+    """Upsert daily bars into price_data. Returns the rows actually inserted
+    (rows already present under the platform's conflict key do not count)."""
     mapped = price_rows_to_platform(rows)
     if not mapped:
         return 0

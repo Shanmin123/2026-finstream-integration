@@ -169,12 +169,18 @@ data/
   raw/
     prices/retrieval_date=YYYY-MM-DD/*.jsonl
     news/retrieval_date=YYYY-MM-DD/*.jsonl
+    quotes/retrieval_date=YYYY-MM-DD/*.jsonl
   processed/
     prices/symbol=SYMBOL/part-000.parquet
     news/symbol=SYMBOL/part-000.parquet
   output/
     prices/event_year=YYYY/symbol=SYMBOL/part-000.parquet
     news/event_date=YYYY-MM-DD/symbol=SYMBOL/part-000.parquet
+    indicators/event_year=YYYY/symbol=SYMBOL/part-000.parquet
+    alphas/event_year=YYYY/symbol=SYMBOL/part-000.parquet
+    quotes/event_date=YYYY-MM-DD/symbol=SYMBOL/part-000.parquet
+    indicators_live/event_year=YYYY/symbol=SYMBOL/part-000.parquet
+    alphas_live/event_year=YYYY/symbol=SYMBOL/part-000.parquet
   checkpoint.json
 logs/
   ibkr_pipeline.jsonl

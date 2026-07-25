@@ -1,4 +1,5 @@
 import csv
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -200,7 +201,11 @@ def load_config(path):
     # An absent or empty stream section is fine for the batch commands; the
     # streaming commands check for symbols when they actually run, so a config
     # that never streams does not have to carry a stream block.
-    stream_symbols = tuple(stream_data.get("symbols") or ())
+    # Upper-cased like the price and news universes: the live-feature join
+    # against the price history is case-sensitive.
+    stream_symbols = tuple(
+        str(symbol).strip().upper() for symbol in (stream_data.get("symbols") or ())
+    )
     # 0 is the documented "run until stopped" mode, so this is not _positive_int.
     # Validate before int(), or -0.5 truncates to 0 and silently becomes unbounded.
     raw_duration = stream_data.get("duration_seconds", 60)
@@ -208,6 +213,8 @@ def load_config(path):
         duration_value = float(raw_duration)
     except (TypeError, ValueError):
         raise ConfigError("stream.duration_seconds must be a number")
+    if not math.isfinite(duration_value):
+        raise ConfigError("stream.duration_seconds must be a finite number")
     if duration_value < 0:
         raise ConfigError("stream.duration_seconds must be 0 (unbounded) or positive")
     if duration_value != int(duration_value):

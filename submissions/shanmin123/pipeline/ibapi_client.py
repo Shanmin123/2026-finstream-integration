@@ -355,15 +355,25 @@ class IBApiClient(EWrapper, EClient):
         pipeline, and the poll never sleeps past a bounded deadline.
         """
         self.start_quote_stream(symbols, market_data_type=market_data_type)
+        collected = []
         try:
             deadline = time.time() + duration_seconds if duration_seconds else None
             while deadline is None or time.time() < deadline:
                 nap = 0.25 if deadline is None else min(0.25, deadline - time.time())
                 if nap > 0:
                     time.sleep(nap)
+        except KeyboardInterrupt:
+            # Stopping an unbounded capture is the documented way to end it, so
+            # it returns what it collected rather than propagating and losing it.
+            pass
         finally:
+            # Drain BEFORE cancelling (stop_quote_stream drops the request
+            # mapping, so later callbacks are discarded) and inside the finally,
+            # or an interrupted unbounded capture would return nothing.
+            collected.extend(self.drain_ticks())
             self.stop_quote_stream()
-        return self.drain_ticks()
+            collected.extend(self.drain_ticks())
+        return collected
 
     _TICK_PRICE_FIELDS = {
         1: "bid", 2: "ask", 4: "last", 6: "high", 7: "low", 9: "close",

@@ -187,3 +187,28 @@ def test_session_date_is_exchange_local_not_the_utc_receipt_date():
     assert session_date_of(datetime(2026, 1, 6, 0, 30, tzinfo=timezone.utc)) == "2026-01-05"
     # Mid-session stays on the same date.
     assert session_date_of(datetime(2026, 1, 6, 15, 0, tzinfo=timezone.utc)) == "2026-01-06"
+
+
+def test_unbounded_capture_returns_its_buffer_when_interrupted(monkeypatch):
+    """duration 0 means 'until stopped', so a Ctrl-C must still return the ticks
+    already collected -- draining after the finally silently discarded them."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(
+        client, "resolve_stock_contract", lambda _s: qualified_contract()
+    )
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+    cancels = []
+    monkeypatch.setattr(client, "cancelMktData", lambda rid: cancels.append(rid))
+
+    def interrupt(_seconds):
+        client.tickPrice(client._stream_request_ids[0], 4, 250.0, None)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("pipeline.ibapi_client.time.sleep", interrupt)
+    rows = client.stream_quotes(["AAPL"], 0)
+    # The tick buffered before the interrupt must come back, not be discarded.
+    assert [(r["symbol"], r["field"], r["value"]) for r in rows] == [
+        ("AAPL", "last", 250.0)
+    ]
+    assert cancels, "subscription should still be cancelled"
