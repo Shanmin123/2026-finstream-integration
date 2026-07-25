@@ -24,13 +24,21 @@ output:
   update_frequency: "Configurable; intended for daily scheduled collection"
 
 storage_policy:
-  raw_data_location: "Configured paths.raw_data_dir on the authorised runtime"
+  raw_data_location: >-
+    OneDrive (University of Edinburgh) folder FinStream-IBKR-data/raw:
+    https://uoe-my.sharepoint.com/:f:/g/personal/s2812542_ed_ac_uk/IgB50G9tIVHySa8fnT5FRAydAflsnIHy3ewhnADd8bGk0BQ?e=s0UCok
   intermediate_data_location: >-
-    Configured paths.intermediate_data_dir on the authorised runtime
-  final_dataset_location: "Configured paths.output_dir on the authorised runtime"
+    Same OneDrive folder, FinStream-IBKR-data/intermediate (local runtime path is
+    configured via paths.intermediate_data_dir in config.yaml)
+  final_dataset_location: >-
+    Same OneDrive folder, FinStream-IBKR-data/final (Spark-readable partitioned
+    parquet as documented in schema.md; local runtime path via paths.output_dir)
   access_instructions: >-
-    Run with an authorised IBKR paper username and its available market-data and
-    news entitlements. Assign persistent FinStream storage paths in config.yaml.
+    The link above is scoped to University of Edinburgh accounts with view access;
+    open it signed in with a UoE account. For write access or a different scope,
+    contact Shanmin Sun (s2812542@ed.ac.uk). Collection runs locally against an
+    authorised IBKR paper login (no credentials in the repo); outputs are synced
+    from the configured local paths into the OneDrive folder above.
 
 notes: >-
   GitHub contains code, schema, and synthetic samples only. News article bodies
