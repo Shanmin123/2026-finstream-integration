@@ -409,14 +409,20 @@ class PipelineRunner:
                     extra={"dataset": "quotes", "symbol": "*", "rows": 0},
                 )
             finally:
-                # Drain before cancelling: stop_quote_stream drops the request
-                # mapping, so ticks decoded after it would be discarded. The
-                # cancel itself must happen even if that drain fails.
-                try:
-                    flush()
-                finally:
-                    self.client.stop_quote_stream()
-                flush()
+                # Drain before cancelling (stop_quote_stream drops the request
+                # mapping, so ticks decoded after it would be discarded), then
+                # cancel, then drain again for whatever arrived in between.
+                # Every step runs even if an earlier one raised: a sink that
+                # fails on the first drain must not strand the ticks the second
+                # one owns. The first failure is re-raised afterwards.
+                shutdown_errors = []
+                for step in (flush, self.client.stop_quote_stream, flush):
+                    try:
+                        step()
+                    except BaseException as exc:  # re-raised below, never swallowed
+                        shutdown_errors.append(exc)
+                if shutdown_errors:
+                    raise shutdown_errors[0]
                 self.logger.info(
                     "stream_stopped",
                     extra={"dataset": "quotes", "symbol": "*", "rows": state["ticks"]},

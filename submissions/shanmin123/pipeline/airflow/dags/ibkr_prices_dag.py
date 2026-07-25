@@ -116,14 +116,15 @@ def ibkr_prices():
         Reads what compute_features already wrote rather than recomputing it,
         and pushes only the latest session: sending the whole panel would be
         ~17 million long-format rows per daily run, nearly all of them
-        unchanged.
+        unchanged. The read is scoped to the newest year partition so the
+        task's parquet I/O does not grow with accumulated history either.
         """
         from pipeline import db_sink
 
         _config, runner = _build_runner()
 
         def _latest(dataset):
-            frame = runner.storage.read_final_dataset(dataset)
+            frame = runner.storage.read_final_dataset(dataset, latest_year_only=True)
             if frame.empty:
                 return frame
             return frame[frame["event_date"] == frame["event_date"].max()]

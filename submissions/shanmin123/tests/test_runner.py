@@ -416,3 +416,66 @@ def test_stream_sink_receives_only_the_current_flush_rows(pipeline_config, tmp_p
     runner.run_stream_pipeline(sink=lambda ticks, i, a: seen.append(len(ticks)))
     # Two flushes of one tick each -- never the accumulated two.
     assert seen == [1, 1]
+
+
+def test_shutdown_drains_again_even_when_the_sink_fails(pipeline_config):
+    """A sink failure on the pre-cancel drain must not strand the ticks that
+    arrive while it runs: the post-cancel drain still owns them, and the sink
+    error surfaces afterwards rather than silently dropping data."""
+    import dataclasses
+
+    def interrupt(_seconds):
+        raise KeyboardInterrupt
+
+    def tick(value):
+        return {
+            "tick_time_utc": "2026-07-25T14:00:00+00:00",
+            "session_date": "2026-07-25", "symbol": "AAA",
+            "field": "last", "value": value,
+        }
+
+    storage = LayeredStorage(
+        pipeline_config.paths.raw_data_dir,
+        pipeline_config.paths.intermediate_data_dir,
+        pipeline_config.paths.output_dir,
+    )
+    import pandas as pd
+
+    dates = pd.date_range("2026-01-02", periods=40, freq="B").strftime("%Y-%m-%d")
+    storage.write_prices(
+        [
+            {
+                "event_date": d, "symbol": "AAA", "con_id": 1, "exchange": "SMART",
+                "currency": "USD", "open": 100.0 + i, "high": 101.0 + i,
+                "low": 99.0 + i, "close": 100.5 + i, "volume": 1000.0,
+                "bar_count": 5, "wap": 100.2 + i,
+            }
+            for i, d in enumerate(dates)
+        ],
+        {"symbol": "AAA"}, "2026-07-24T00:00:00+00:00", "seed",
+    )
+    client = FakeStreamClient([[tick(150.0)], [tick(151.0)]])
+    config = dataclasses.replace(
+        pipeline_config,
+        stream=dataclasses.replace(
+            pipeline_config.stream, symbols=("AAA",),
+            duration_seconds=1, flush_interval_seconds=0.1,
+        ),
+    )
+    runner = PipelineRunner(
+        config=config, client=client, storage=storage,
+        checkpoint=CheckpointStore(config.paths.checkpoint_file),
+        now_fn=lambda: datetime(2026, 7, 25, 14, 5, tzinfo=timezone.utc),
+        sleep_fn=interrupt,
+    )
+    seen = []
+
+    def sink(ticks, _indicators, _alphas):
+        seen.append([row["value"] for row in ticks])
+        if len(seen) == 1:
+            raise RuntimeError("sink down")
+
+    with pytest.raises(RuntimeError, match="sink down"):
+        runner.run_stream_pipeline(sink=sink)
+    assert client.stopped == 1
+    assert seen == [[150.0], [151.0]]

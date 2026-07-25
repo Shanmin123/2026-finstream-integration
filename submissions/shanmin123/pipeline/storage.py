@@ -201,12 +201,23 @@ class LayeredStorage:
         merged = pd.concat(frames, ignore_index=True)
         return merged.sort_values(["symbol", "event_date"]).reset_index(drop=True)
 
-    def read_final_dataset(self, dataset):
-        """Load a final dataset (indicators, alphas, indicators_live, ...) as one frame."""
+    def read_final_dataset(self, dataset, latest_year_only=False):
+        """Load a final dataset (indicators, alphas, indicators_live, ...) as one frame.
+
+        `latest_year_only` reads just the newest `event_year=` partition, which
+        is where the most recent session always lives. Callers that only need
+        the latest rows pass it so their parquet I/O stays flat instead of
+        growing with every year of accumulated history.
+        """
         root = self.final_dir / dataset
         paths = sorted(root.glob("event_year=*/symbol=*/part-000.parquet"))
         if not paths:
             return pd.DataFrame()
+        if latest_year_only:
+            # event_year=YYYY sorts lexically, so the last path sits in the
+            # newest year directory.
+            newest = paths[-1].parent.parent.name
+            paths = [p for p in paths if p.parent.parent.name == newest]
         return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
     def read_latest_quote_bars(self):

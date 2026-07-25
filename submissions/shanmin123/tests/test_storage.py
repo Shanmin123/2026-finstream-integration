@@ -149,3 +149,31 @@ def test_legacy_quotes_without_session_date_do_not_win_the_session_max(tmp_path)
     bar = storage.read_latest_quote_bars()["AAPL"]
     assert bar["event_date"] == "2026-07-25"
     assert bar["close"] == 250.0
+
+
+def test_latest_year_only_reads_just_the_newest_year_partition(tmp_path):
+    """The daily loader only needs the newest session. Reading every year would
+    make its parquet I/O grow with accumulated history."""
+    storage = LayeredStorage(
+        raw_dir=tmp_path / "raw",
+        intermediate_dir=tmp_path / "processed",
+        final_dir=tmp_path / "output",
+    )
+    frame = pd.DataFrame(
+        [
+            {"symbol": "AAA", "event_date": "2024-06-03", "rsi_14": 30.0,
+             "as_of_utc": "2024-06-03T00:00:00+00:00"},
+            {"symbol": "AAA", "event_date": "2026-07-24", "rsi_14": 55.0,
+             "as_of_utc": "2026-07-24T00:00:00+00:00"},
+            {"symbol": "BBB", "event_date": "2026-07-24", "rsi_14": 60.0,
+             "as_of_utc": "2026-07-24T00:00:00+00:00"},
+        ]
+    )
+    storage.write_derived("indicators", frame, ("symbol", "event_date"), "as_of_utc")
+
+    everything = storage.read_final_dataset("indicators")
+    assert sorted(everything["event_date"]) == ["2024-06-03", "2026-07-24", "2026-07-24"]
+
+    newest = storage.read_final_dataset("indicators", latest_year_only=True)
+    assert sorted(newest["event_date"]) == ["2026-07-24", "2026-07-24"]
+    assert sorted(newest["symbol"]) == ["AAA", "BBB"]
