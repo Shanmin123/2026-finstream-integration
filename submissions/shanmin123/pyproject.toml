@@ -20,3 +20,10 @@ postgres = ["psycopg2-binary==2.9.9"]
 
 [tool.setuptools]
 packages = ["pipeline"]
+
+# The table DDL has to travel with an installed copy: whoever creates the
+# platform tables needs it, and it is not reachable from a wheel otherwise.
+# The Airflow DAGs are deliberately NOT packaged -- Airflow loads DAG files from
+# its dags directory, not from an installed package.
+[tool.setuptools.package-data]
+pipeline = ["db/init_postgres/*.sql"]

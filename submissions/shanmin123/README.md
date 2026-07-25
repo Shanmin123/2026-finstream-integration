@@ -145,7 +145,8 @@ Deploying into the shared Airflow: the DAG tasks import this `pipeline` package,
 so copying the two DAG files alone is not enough — the package has to be
 importable by the workers. Either mount this submission directory and add it to
 `PYTHONPATH`, or `pip install .` from this directory into the worker image (packaging
-metadata is in `pyproject.toml`). The worker also needs network access to a logged-in IB
+metadata is in `pyproject.toml`; the table DDL ships with the package, while the
+DAG files are copied into Airflow's own dags directory rather than installed). The worker also needs network access to a logged-in IB
 Gateway at `ib.host`/`ib.port`; the Gateway login itself is interactive and is
 not automated here.
 
