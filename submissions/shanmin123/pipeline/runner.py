@@ -414,13 +414,20 @@ class PipelineRunner:
                 # cancel, then drain again for whatever arrived in between.
                 # Every step runs even if an earlier one raised: a sink that
                 # fails on the first drain must not strand the ticks the second
-                # one owns. The first failure is re-raised afterwards.
+                # one owns. The first failure is re-raised; later ones can only
+                # be logged, since one raise carries one exception.
                 shutdown_errors = []
                 for step in (flush, self.client.stop_quote_stream, flush):
                     try:
                         step()
-                    except BaseException as exc:  # re-raised below, never swallowed
+                    except BaseException as exc:  # KeyboardInterrupt too: deferred, not dropped
                         shutdown_errors.append(exc)
+                for extra_error in shutdown_errors[1:]:
+                    self.logger.error(
+                        "stream_shutdown_step_failed",
+                        exc_info=extra_error,
+                        extra={"dataset": "quotes", "symbol": "*", "rows": 0},
+                    )
                 if shutdown_errors:
                     raise shutdown_errors[0]
                 self.logger.info(

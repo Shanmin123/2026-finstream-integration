@@ -214,10 +214,20 @@ class LayeredStorage:
         if not paths:
             return pd.DataFrame()
         if latest_year_only:
-            # event_year=YYYY sorts lexically, so the last path sits in the
-            # newest year directory.
-            newest = paths[-1].parent.parent.name
-            paths = [p for p in paths if p.parent.parent.name == newest]
+            # write_derived takes the year from event_date[:4], so a malformed
+            # date would produce a partition whose name does not order like a
+            # year ("9" sorts after "2026") and would silently hide the real
+            # newest session. Refuse to guess.
+            prefix = "event_year="
+            years = {path.parent.parent.name[len(prefix):] for path in paths}
+            invalid = sorted(y for y in years if not (len(y) == 4 and y.isdigit()))
+            if invalid:
+                raise ValueError(
+                    "%s has non-YYYY year partitions %s: the newest session "
+                    "cannot be identified by partition name." % (dataset, invalid)
+                )
+            newest = prefix + max(years)
+            paths = [path for path in paths if path.parent.parent.name == newest]
         return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
 
     def read_latest_quote_bars(self):

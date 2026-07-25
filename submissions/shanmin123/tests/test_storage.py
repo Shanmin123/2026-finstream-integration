@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pytest
 
 from pipeline.storage import LayeredStorage
 
@@ -177,3 +178,27 @@ def test_latest_year_only_reads_just_the_newest_year_partition(tmp_path):
     newest = storage.read_final_dataset("indicators", latest_year_only=True)
     assert sorted(newest["event_date"]) == ["2026-07-24", "2026-07-24"]
     assert sorted(newest["symbol"]) == ["AAA", "BBB"]
+
+
+def test_latest_year_only_refuses_partitions_that_are_not_four_digit_years(tmp_path):
+    """A malformed event_date yields a year directory that does not sort like a
+    year, which would silently hide the real newest session."""
+    storage = LayeredStorage(
+        raw_dir=tmp_path / "raw",
+        intermediate_dir=tmp_path / "processed",
+        final_dir=tmp_path / "output",
+    )
+    frame = pd.DataFrame(
+        [
+            {"symbol": "AAA", "event_date": "2026-07-24", "rsi_14": 55.0,
+             "as_of_utc": "2026-07-24T00:00:00+00:00"},
+            {"symbol": "AAA", "event_date": "oops-07-24", "rsi_14": 10.0,
+             "as_of_utc": "2026-07-24T00:00:00+00:00"},
+        ]
+    )
+    storage.write_derived("indicators", frame, ("symbol", "event_date"), "as_of_utc")
+
+    # Reading everything still works; only the newest-year shortcut refuses.
+    assert len(storage.read_final_dataset("indicators")) == 2
+    with pytest.raises(ValueError, match="non-YYYY year partitions"):
+        storage.read_final_dataset("indicators", latest_year_only=True)
