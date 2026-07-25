@@ -149,6 +149,12 @@ indicator, matching this project's existing collectors: adding an indicator or
 an alpha formula needs no migration. `is_provisional` marks an intraday value
 computed from a streamed price; the end-of-day run overwrites it in place.
 
+Symbols are stored in one canonical form: upper-cased, with share-class dots
+written as dashes (`BRK.B` and `BRK-B` both store as `BRK-B`), because both
+resolve to the same IB contract and two spellings would split an instrument's
+partitions. Every universe (prices, news, stream, and tickers read from the
+platform) passes through that form.
+
 Known limits, recorded rather than hidden:
 
 * `quote_ticks` keys on millisecond timestamps, so two updates to the same field

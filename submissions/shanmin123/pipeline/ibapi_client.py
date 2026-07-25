@@ -342,10 +342,24 @@ class IBApiClient(EWrapper, EClient):
             self._stream_rows = []
         return rows
 
+    def stream_error(self):
+        """The first error IB reported against a live subscription, if any.
+
+        Market-data rejections (e.g. 354, not subscribed) arrive on the request
+        id rather than as an exception, so without this a run would sit through
+        its whole duration and report success with zero ticks.
+        """
+        for request_id in getattr(self, "_stream_request_ids", []):
+            error = self._errors.get(request_id)
+            if error is not None:
+                return error
+        return None
+
     def stop_quote_stream(self):
         for request_id in getattr(self, "_stream_request_ids", []):
             self.cancelMktData(request_id)
             self._stream_symbols.pop(request_id, None)
+            self._clean_request(request_id)
         self._stream_request_ids = []
 
     def stream_quotes(self, symbols, duration_seconds, market_data_type=3):
@@ -359,6 +373,9 @@ class IBApiClient(EWrapper, EClient):
         try:
             deadline = time.time() + duration_seconds if duration_seconds else None
             while deadline is None or time.time() < deadline:
+                error = self.stream_error()
+                if error is not None:
+                    raise error
                 nap = 0.25 if deadline is None else min(0.25, deadline - time.time())
                 if nap > 0:
                     time.sleep(nap)

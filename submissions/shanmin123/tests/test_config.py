@@ -109,3 +109,35 @@ def test_fractional_and_negative_fractional_durations_are_rejected(tmp_path):
         path.write_text(yaml.safe_dump(base), encoding="utf-8")
         with _pytest.raises(ConfigError):
             load_config(str(path))
+
+
+def _write(tmp_path, mutate, name="c.yaml"):
+    import yaml
+
+    base = yaml.safe_load(open("config.example.yaml", encoding="utf-8"))
+    base["prices"]["symbols"] = ["AAPL"]
+    base["prices"].pop("symbols_file", None)
+    mutate(base)
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    return str(path)
+
+
+def test_share_class_symbols_share_one_canonical_form(tmp_path):
+    # BRK.B and BRK-B are one instrument; storing both would split its
+    # partitions and break the live-feature join.
+    from pipeline.config import canonical_symbol, load_config
+
+    assert canonical_symbol("BRK.B") == canonical_symbol("BRK-B") == "BRK-B"
+    path = _write(tmp_path, lambda b: b["stream"].update(symbols=[" brk.b ", "BRK-B", "  "]))
+    assert load_config(path).stream.symbols == ("BRK-B",)   # deduped, blanks dropped
+
+
+def test_non_finite_flush_interval_is_rejected_at_load(tmp_path):
+    import pytest as _pytest
+
+    from pipeline.config import ConfigError, load_config
+
+    path = _write(tmp_path, lambda b: b["stream"].update(flush_interval_seconds=float("nan")))
+    with _pytest.raises(ConfigError):
+        load_config(path)

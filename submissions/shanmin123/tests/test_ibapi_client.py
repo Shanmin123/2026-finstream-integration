@@ -212,3 +212,20 @@ def test_unbounded_capture_returns_its_buffer_when_interrupted(monkeypatch):
         ("AAPL", "last", 250.0)
     ]
     assert cancels, "subscription should still be cancelled"
+
+
+def test_rejected_subscription_raises_instead_of_reporting_zero_ticks(monkeypatch):
+    """IB reports a market-data rejection on the request id, not as an
+    exception, so a run would otherwise sit out its duration and 'succeed'."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+    monkeypatch.setattr(client, "cancelMktData", lambda _r: None)
+
+    def reject(_seconds):
+        client.error(client._stream_request_ids[0], 354, "Requested market data is not subscribed")
+
+    monkeypatch.setattr("pipeline.ibapi_client.time.sleep", reject)
+    with pytest.raises(IBRequestError, match="354"):
+        client.stream_quotes(["AAPL"], 5)

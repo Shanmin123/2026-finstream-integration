@@ -89,11 +89,33 @@ def _resolve_path(base_dir, value, field_name):
     return path.resolve()
 
 
+def _finite_positive(value, name, minimum):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ConfigError("%s must be a number" % name)
+    if not math.isfinite(number):
+        raise ConfigError("%s must be a finite number" % name)
+    return max(number, minimum)
+
+
+def canonical_symbol(value):
+    """One stored form per instrument.
+
+    Share classes are written `BRK.B` by some vendors and `BRK-B` by others, and
+    both resolve to the same IB contract (`BRK B`). Storing them separately
+    would split a symbol's partitions and silently break the live-feature join,
+    so dots become dashes here, at the single boundary every universe passes
+    through.
+    """
+    return str(value).strip().upper().replace(".", "-")
+
+
 def _canonical_symbols(values):
     seen = set()
     symbols = []
     for value in values or []:
-        symbol = str(value).strip().upper()
+        symbol = canonical_symbol(value)
         if symbol and symbol not in seen:
             symbols.append(symbol)
             seen.add(symbol)
@@ -201,11 +223,10 @@ def load_config(path):
     # An absent or empty stream section is fine for the batch commands; the
     # streaming commands check for symbols when they actually run, so a config
     # that never streams does not have to carry a stream block.
-    # Upper-cased like the price and news universes: the live-feature join
-    # against the price history is case-sensitive.
-    stream_symbols = tuple(
-        str(symbol).strip().upper() for symbol in (stream_data.get("symbols") or ())
-    )
+    # Same canonical form as the price and news universes: the live-feature
+    # join against the price history is exact, and duplicates would open two
+    # subscriptions for one instrument.
+    stream_symbols = _canonical_symbols(stream_data.get("symbols"))
     # 0 is the documented "run until stopped" mode, so this is not _positive_int.
     # Validate before int(), or -0.5 truncates to 0 and silently becomes unbounded.
     raw_duration = stream_data.get("duration_seconds", 60)
@@ -224,8 +245,10 @@ def load_config(path):
         symbols=stream_symbols,
         duration_seconds=stream_duration,
         market_data_type=int(stream_data.get("market_data_type", 3)),
-        flush_interval_seconds=max(
-            float(stream_data.get("flush_interval_seconds", 5.0)), 0.1
+        flush_interval_seconds=_finite_positive(
+            stream_data.get("flush_interval_seconds", 5.0),
+            "stream.flush_interval_seconds",
+            minimum=0.1,
         ),
     )
     return PipelineConfig(

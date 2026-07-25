@@ -162,6 +162,13 @@ def get_active_tickers(connection_factory=get_connection):
                 "SELECT ticker FROM companies WHERE is_active = TRUE ORDER BY ticker"
             )
             return [row[0] for row in cur.fetchall()]
+    except Exception as exc:
+        # A missing table or a permission error is the same situation as an
+        # unreachable database: fall back to the configured universe.
+        logger.warning("db_query_failed", extra={"dataset": "companies",
+                                                 "symbol": "*", "rows": 0})
+        logger.debug("db_query_failed_detail: %s", exc)
+        return None
     finally:
         conn.close()
 

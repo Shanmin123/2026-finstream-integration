@@ -364,6 +364,9 @@ class PipelineRunner:
             )
             try:
                 while deadline is None or time.time() < deadline:
+                    error = getattr(self.client, "stream_error", lambda: None)()
+                    if error is not None:
+                        raise error
                     # Never sleep past the deadline: a flush interval longer
                     # than the run would otherwise overshoot it.
                     nap = cfg.flush_interval_seconds

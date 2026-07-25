@@ -71,7 +71,11 @@ def ibkr_prices():
 
         started = time.time()
         config, runner = _build_runner()
+        from pipeline.config import canonical_symbol
+
         active = db_sink.get_active_tickers()
+        if active:
+            active = [canonical_symbol(ticker) for ticker in active if str(ticker).strip()]
         if active:
             from dataclasses import replace
 
@@ -80,13 +84,18 @@ def ibkr_prices():
             )
             logger.info("universe from platform: %d tickers", len(active))
         summary = runner.run_prices()
-        db_sink.record_run(
-            DAG_ID,
-            summary["written"],
-            time.time() - started,
-            "success" if not summary["errors"] else "partial",
-            None if not summary["errors"] else str(summary["errors"][:3]),
-        )
+        try:
+            db_sink.record_run(
+                DAG_ID,
+                summary["written"],
+                time.time() - started,
+                "success" if not summary["errors"] else "partial",
+                None if not summary["errors"] else str(summary["errors"][:3]),
+            )
+        except Exception:
+            # The database is optional: run telemetry must not fail a
+            # collection that already produced its parquet datasets.
+            logger.warning("pipeline_runs telemetry unavailable", exc_info=True)
         return summary["written"]
 
     @task
