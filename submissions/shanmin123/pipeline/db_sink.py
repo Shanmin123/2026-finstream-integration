@@ -86,7 +86,10 @@ def write_prices(rows, connection_factory=get_connection):
     inserted = 0
     try:
         with conn.cursor() as cur:
-            execute_values(
+            # execute_values pages the batch and psycopg2 documents that
+            # cursor.rowcount does NOT hold the total afterwards, so the count
+            # comes from RETURNING rows gathered across every page.
+            returned = execute_values(
                 cur,
                 """
                 INSERT INTO price_data
@@ -94,10 +97,12 @@ def write_prices(rows, connection_factory=get_connection):
                      close, volume, interval, source)
                 VALUES %s
                 ON CONFLICT (ticker, timestamp_ms, interval) DO NOTHING
+                RETURNING 1
                 """,
                 mapped,
+                fetch=True,
             )
-            inserted = cur.rowcount if cur.rowcount is not None else 0
+            inserted = len(returned or [])
         conn.commit()
     finally:
         conn.close()

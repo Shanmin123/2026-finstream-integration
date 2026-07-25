@@ -95,3 +95,66 @@ def test_news_write_deduplicates_by_symbol_provider_and_article(tmp_path):
     assert result.final_rows == 1
     assert list(final["headline"]) == ["Synthetic headline v2"]
     assert "article_text" not in final.columns
+import pandas as pd
+
+from pipeline.storage import LayeredStorage
+
+
+def _quote(symbol, field, value, when):
+    return {"tick_time_utc": when, "symbol": symbol, "field": field, "value": value}
+
+
+def test_quote_bars_use_one_session_and_ignore_the_previous_close_tick(tmp_path):
+    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
+    rows = [
+        # yesterday's session
+        _quote("AAPL", "high", 999.0, "2026-07-24T20:00:00+00:00"),
+        _quote("AAPL", "last", 200.0, "2026-07-24T20:00:00+00:00"),
+        # today's
+        _quote("AAPL", "last", 250.0, "2026-07-25T14:00:00+00:00"),
+        _quote("AAPL", "high", 252.0, "2026-07-25T14:00:01+00:00"),
+        # IB's `close` tick is the PREVIOUS close and must not become today's
+        _quote("AAPL", "close", 199.0, "2026-07-25T14:00:02+00:00"),
+    ]
+    storage.write_quotes(rows, {}, "2026-07-25T14:01:00+00:00", "bars-test")
+    bars = storage.read_latest_quote_bars()
+    bar = bars["AAPL"]
+    assert bar["event_date"] == "2026-07-25"
+    assert bar["close"] == 250.0        # from `last`, not the close tick
+    assert bar["high"] == 252.0         # today's high, not yesterday's 999
+
+
+def _quote(symbol, field, value, when):
+    return {"tick_time_utc": when, "symbol": symbol, "field": field, "value": value}
+
+
+def test_quote_bars_use_one_session_and_ignore_the_previous_close_tick(tmp_path):
+    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
+    rows = [
+        _quote("AAPL", "high", 999.0, "2026-07-24T20:00:00+00:00"),
+        _quote("AAPL", "last", 200.0, "2026-07-24T20:00:00+00:00"),
+        _quote("AAPL", "last", 250.0, "2026-07-25T14:00:00+00:00"),
+        _quote("AAPL", "high", 252.0, "2026-07-25T14:00:01+00:00"),
+        # IB's `close` tick is the PREVIOUS session's close; it must not become
+        # today's provisional close.
+        _quote("AAPL", "close", 199.0, "2026-07-25T14:00:02+00:00"),
+    ]
+    storage.write_quotes(rows, {}, "2026-07-25T14:01:00+00:00", "bars-test")
+    bar = storage.read_latest_quote_bars()["AAPL"]
+    assert bar["event_date"] == "2026-07-25"
+    assert bar["close"] == 250.0        # from `last`, not from the close tick
+    assert bar["high"] == 252.0         # today's high, never yesterday's 999
+
+
+def test_raw_microbatches_within_one_second_do_not_overwrite(tmp_path):
+    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
+    first = storage.write_quotes(
+        [_quote("AAPL", "last", 1.0, "2026-07-25T14:00:00.100000+00:00")],
+        {}, "2026-07-25T14:00:00.100000+00:00", "quotes-stream-20260725T140000Z",
+    )
+    second = storage.write_quotes(
+        [_quote("AAPL", "last", 2.0, "2026-07-25T14:00:00.600000+00:00")],
+        {}, "2026-07-25T14:00:00.600000+00:00", "quotes-stream-20260725T140000Z",
+    )
+    assert first.raw_path != second.raw_path
+    assert first.raw_path.exists() and second.raw_path.exists()

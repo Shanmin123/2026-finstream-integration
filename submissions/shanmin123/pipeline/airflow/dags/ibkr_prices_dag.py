@@ -13,11 +13,16 @@ Data flow:
 
 Universe: pulled from the platform (`companies.is_active`) so the DAG does not
 hardcode a list; falls back to the configured symbols file when the database is
-unreachable. Note this is the CURRENT membership and is right for the daily
-incremental run. A historical backfill must use the point-in-time symbols file
-instead, because `alpha_20` ranks cross-sectionally: ranking past dates against
-today's constituents would drop names that have since left the index and bias
-the factor.
+unreachable. This is the CURRENT membership, which is what the daily
+incremental run needs.
+
+Known limitation, not solved here: `alpha_20` ranks cross-sectionally over
+whichever symbols are in the panel. The symbols file is a snapshot of names
+trading at a single date, not dated membership, so a multi-year backfill ranks
+past dates against a later constituent set. Removing that bias needs a
+membership table with effective dates (the platform's `companies` table would
+be the natural home); until then, treat historical `alpha_20` as
+survivorship-affected and prefer the daily forward-computed values.
 
 Requires an authenticated IB Gateway paper session reachable from the worker at
 IB_HOST/IB_PORT (the login itself is interactive and is not automated here).

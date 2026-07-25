@@ -237,20 +237,28 @@ class LayeredStorage:
         if not paths:
             return {}
         frame = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
-        wanted = ("last", "open", "high", "low", "close", "volume")
+        # IB's `close` tick is the PREVIOUS session's close, so it is never the
+        # provisional close; only `last` is.
+        wanted = ("last", "open", "high", "low", "volume")
         frame = frame[frame["field"].isin(wanted)]
         if frame.empty:
             return {}
-        frame = frame.sort_values("tick_time_utc").groupby(
-            ["symbol", "field"]
-        ).tail(1)
+        frame = frame.copy()
+        frame["event_date"] = frame["tick_time_utc"].astype(str).str[:10]
         bars = {}
-        for _, row in frame.iterrows():
-            bar = bars.setdefault(row["symbol"], {})
-            bar["event_date"] = str(row["tick_time_utc"])[:10]
-            field = "close" if row["field"] == "last" else row["field"]
-            bar[field] = float(row["value"])
-        return {s: b for s, b in bars.items() if b.get("close") is not None}
+        for symbol, symbol_frame in frame.groupby("symbol"):
+            # One session only: mixing today's last with yesterday's high would
+            # produce a bar that never existed.
+            latest_date = symbol_frame["event_date"].max()
+            session = symbol_frame[symbol_frame["event_date"] == latest_date]
+            session = session.sort_values("tick_time_utc").groupby("field").tail(1)
+            bar = {"event_date": latest_date}
+            for _, row in session.iterrows():
+                field = "close" if row["field"] == "last" else row["field"]
+                bar[field] = float(row["value"])
+            if bar.get("close") is not None:
+                bars[symbol] = bar
+        return bars
 
     def read_latest_quote_last(self):
         """Latest streamed `last` tick per symbol -> {symbol: (value, event_date)}."""

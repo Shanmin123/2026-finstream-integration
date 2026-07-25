@@ -236,3 +236,52 @@ def test_live_features_use_streamed_high_low_volume_when_present():
     row = live_a.iloc[0]
     assert row["alpha_101"] == pytest.approx((150.0 - 148.0) / ((151.0 - 147.0) + 0.001))
     assert not pd.isna(row["alpha_53"])
+
+
+def test_atr_seeds_on_the_first_real_true_range():
+    # True range needs a previous close, so the first bar has none; a skipna
+    # max() would use high-low there and seed ATR a row early off a bar that is
+    # not a true range (9.0 instead of 2.0 on this fixture).
+    n = 20
+    close = pd.Series([100.0] * n)
+    frame = pd.DataFrame(
+        {
+            "symbol": "T",
+            "event_date": pd.date_range("2026-01-02", periods=n, freq="B").strftime("%Y-%m-%d"),
+            "open": close,
+            "high": pd.Series([200.0] + [101.0] * (n - 1)),   # extreme first bar
+            "low": pd.Series([100.0] + [99.0] * (n - 1)),
+            "close": close, "volume": 1000.0,
+        }
+    )
+    atr = compute_indicators(frame, COMPUTED_AT)["atr_14"]
+    assert atr.first_valid_index() == 14            # not 13
+    assert atr.iloc[14] == pytest.approx(2.0)       # the first bar is excluded
+
+
+def test_live_row_blanks_indicators_whose_inputs_were_not_streamed():
+    # Wilder smoothing carries the previous average across a NaN and OBV treats
+    # a missing volume as zero, so a close-only bar would report yesterday's
+    # ATR and OBV as if they were today's.
+    from pipeline.features import compute_live_features
+
+    live_i, _live_a = compute_live_features(
+        _prices(n=40), {"TEST": {"event_date": "2026-03-02", "close": 150.0}}, COMPUTED_AT
+    )
+    row = live_i.iloc[0]
+    assert pd.isna(row["atr_14"])
+    assert pd.isna(row["obv"])
+    assert not pd.isna(row["sma_20"])               # close-only indicators still valid
+
+
+def test_live_row_keeps_indicators_whose_inputs_were_streamed():
+    from pipeline.features import compute_live_features
+
+    live_i, _live_a = compute_live_features(
+        _prices(n=40),
+        {"TEST": {"event_date": "2026-03-02", "close": 150.0, "high": 151.0,
+                  "low": 149.0, "volume": 5000.0}},
+        COMPUTED_AT,
+    )
+    row = live_i.iloc[0]
+    assert not pd.isna(row["atr_14"]) and not pd.isna(row["obv"])

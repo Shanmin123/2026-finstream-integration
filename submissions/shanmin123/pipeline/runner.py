@@ -276,10 +276,14 @@ class PipelineRunner:
             state["quote_rows"] += result.final_rows
             for row in rows:
                 field = row["field"]
-                if field not in ("last", "open", "high", "low", "volume", "close"):
+                # `close` is IB's previous-session close, not today's price.
+                if field not in ("last", "open", "high", "low", "volume"):
                     continue
+                event_date = row["tick_time_utc"][:10]
                 bar = bars.setdefault(row["symbol"], {})
-                bar["event_date"] = row["tick_time_utc"][:10]
+                if bar.get("event_date") != event_date:
+                    bar.clear()          # new session: never mix days in one bar
+                    bar["event_date"] = event_date
                 bar["close" if field == "last" else field] = row["value"]
             priced = {s: b for s, b in bars.items() if b.get("close") is not None}
             if not priced:
@@ -324,9 +328,12 @@ class PipelineRunner:
                 )
             finally:
                 # Drain before cancelling: stop_quote_stream drops the request
-                # mapping, so ticks decoded after it would be discarded.
-                flush()
-                self.client.stop_quote_stream()
+                # mapping, so ticks decoded after it would be discarded. The
+                # cancel itself must happen even if that drain fails.
+                try:
+                    flush()
+                finally:
+                    self.client.stop_quote_stream()
                 flush()
                 self.logger.info(
                     "stream_stopped",

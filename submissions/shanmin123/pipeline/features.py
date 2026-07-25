@@ -136,10 +136,13 @@ def compute_indicators(prices, computed_at_utc):
         out["bb_lower_20"] = mid - 2.0 * std
 
         prev_close = close.shift(1)
+        # True range needs the previous close, so the first bar has none. max()
+        # skips NaN by default and would return high-low there, seeding ATR a
+        # row early off a bar that is not a true range.
         true_range = pd.concat(
             [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
             axis=1,
-        ).max(axis=1)
+        ).max(axis=1).where(prev_close.notna())
         out["atr_14"] = _wilder_smooth(true_range, 14)
 
         direction = np.sign(change.fillna(0.0))
@@ -272,6 +275,19 @@ def compute_live_features(prices, bars_by_symbol, as_of_utc):
     live_a = alphas.sort_values("event_date").groupby("symbol", sort=True).tail(1)
     live_i = live_i.copy()
     live_a = live_a.copy()
+    # Indicators that read fields the stream has not reported would otherwise
+    # carry yesterday's value forward (Wilder smoothing) or treat a missing
+    # volume as zero (OBV). Blank them for this row: not yet known.
+    needs = {"atr_14": ("high", "low"), "obv": ("volume",)}
+    for symbol_index, symbol in enumerate(live_i["symbol"]):
+        observed = bars_by_symbol.get(symbol, {})
+        for column, required in needs.items():
+            if any(
+                observed.get(field) is None
+                or observed.get(field) != observed.get(field)
+                for field in required
+            ):
+                live_i.iloc[symbol_index, live_i.columns.get_loc(column)] = np.nan
     for frame in (live_i, live_a):
         frame["as_of_utc"] = as_of_utc
         frame["provisional"] = True

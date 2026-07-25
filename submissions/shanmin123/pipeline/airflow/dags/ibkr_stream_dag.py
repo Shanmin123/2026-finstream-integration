@@ -66,11 +66,19 @@ def ibkr_stream():
         summary["quote_ticks_loaded"] = db_sink.write_quotes(
             quotes, market_data_type=config.stream.market_data_type
         )
+        # Only the session just streamed: pushing every accumulated partition
+        # would re-send the whole history of provisional rows on every run.
+        def _current_session(dataset):
+            frame = runner.storage.read_final_dataset(dataset)
+            if frame.empty:
+                return frame
+            return frame[frame["event_date"] == frame["event_date"].max()]
+
         summary["indicators_loaded"] = db_sink.write_indicators(
-            runner.storage.read_final_dataset("indicators_live")
+            _current_session("indicators_live")
         )
         summary["alphas_loaded"] = db_sink.write_alphas(
-            runner.storage.read_final_dataset("alphas_live")
+            _current_session("alphas_live")
         )
         logger.info(
             "stream run complete: %s ticks, %s live feature rows",

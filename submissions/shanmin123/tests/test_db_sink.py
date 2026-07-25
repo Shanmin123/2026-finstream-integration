@@ -70,9 +70,10 @@ def test_write_prices_upserts_idempotently_and_closes(monkeypatch):
     conn = FakeConn(calls)
     captured = {}
 
-    def fake_execute_values(cur, sql, values):
+    def fake_execute_values(cur, sql, values, **kwargs):
         captured["sql"] = sql
         captured["values"] = values
+        return [(1,)] * len(values) if kwargs.get("fetch") else None
 
     monkeypatch.setattr("psycopg2.extras.execute_values", fake_execute_values,
                         raising=False)
@@ -165,7 +166,7 @@ def test_indicator_upsert_lets_the_newer_computation_win(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         "psycopg2.extras.execute_values",
-        lambda cur, sql, values: captured.update(sql=sql, values=values),
+        lambda cur, sql, values, **_k: captured.update(sql=sql, values=values),
         raising=False,
     )
     frame = pd.DataFrame(
@@ -187,7 +188,7 @@ def test_derived_upsert_refuses_to_downgrade_a_final_value(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         "psycopg2.extras.execute_values",
-        lambda cur, sql, values: captured.update(sql=sql),
+        lambda cur, sql, values, **_k: captured.update(sql=sql),
         raising=False,
     )
     frame = pd.DataFrame(
@@ -212,8 +213,9 @@ def test_price_write_reports_rows_actually_inserted(monkeypatch):
         def cursor(self):
             return ConflictCursor(self.store)
 
+    # No RETURNING rows come back: every row conflicted with an existing bar.
     monkeypatch.setattr(
-        "psycopg2.extras.execute_values", lambda *_a, **_k: None, raising=False
+        "psycopg2.extras.execute_values", lambda *_a, **_k: [], raising=False
     )
     sent = write_prices(
         [{"event_date": "2026-07-24", "symbol": "AAPL", "open": 1.0, "high": 2.0,
@@ -221,3 +223,28 @@ def test_price_write_reports_rows_actually_inserted(monkeypatch):
         connection_factory=lambda: ConflictConn([]),
     )
     assert sent == 0
+
+
+def test_insert_count_is_not_taken_from_rowcount_across_pages(monkeypatch):
+    """execute_values pages the batch and psycopg2 documents that rowcount does
+    NOT hold the total afterwards, so the count must come from RETURNING rows."""
+    from pipeline.db_sink import write_prices
+
+    class LastPageOnlyCursor(FakeCursor):
+        rowcount = 100                      # what one page would have reported
+
+    class Conn(FakeConn):
+        def cursor(self):
+            return LastPageOnlyCursor(self.store)
+
+    rows = [
+        {"event_date": "2026-07-%02d" % (d % 28 + 1), "symbol": "S%d" % d,
+         "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0}
+        for d in range(250)
+    ]
+    monkeypatch.setattr(
+        "psycopg2.extras.execute_values",
+        lambda cur, sql, values, **kw: [(1,)] * len(values) if kw.get("fetch") else None,
+        raising=False,
+    )
+    assert write_prices(rows, connection_factory=lambda: Conn([])) == 250
