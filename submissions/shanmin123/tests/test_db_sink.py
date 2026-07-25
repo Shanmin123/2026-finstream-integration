@@ -166,7 +166,10 @@ def test_indicator_upsert_lets_the_newer_computation_win(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         "psycopg2.extras.execute_values",
-        lambda cur, sql, values, **_k: captured.update(sql=sql, values=values),
+        lambda cur, sql, values, **kw: (
+            captured.update(sql=sql, values=values),
+            [(1,)] * len(values) if kw.get("fetch") else None,
+        )[1],
         raising=False,
     )
     frame = pd.DataFrame(
@@ -188,7 +191,10 @@ def test_derived_upsert_refuses_to_downgrade_a_final_value(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         "psycopg2.extras.execute_values",
-        lambda cur, sql, values, **_k: captured.update(sql=sql),
+        lambda cur, sql, values, **kw: (
+            captured.update(sql=sql),
+            [(1,)] * len(values) if kw.get("fetch") else None,
+        )[1],
         raising=False,
     )
     frame = pd.DataFrame(

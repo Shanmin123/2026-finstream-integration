@@ -197,11 +197,17 @@ def load_config(path):
         ),
     )
     stream_data = data.get("stream") or {}
+    # An absent or empty stream section is fine for the batch commands; the
+    # streaming commands check for symbols when they actually run, so a config
+    # that never streams does not have to carry a stream block.
+    stream_symbols = tuple(stream_data.get("symbols") or ())
+    # 0 is the documented "run until stopped" mode, so this is not _positive_int.
+    stream_duration = int(stream_data.get("duration_seconds", 60))
+    if stream_duration < 0:
+        raise ConfigError("stream.duration_seconds must be 0 (unbounded) or positive")
     stream = StreamConfig(
-        symbols=tuple(stream_data.get("symbols") or ("AAPL",)),
-        duration_seconds=_positive_int(
-            stream_data.get("duration_seconds", 60), "duration_seconds"
-        ),
+        symbols=stream_symbols,
+        duration_seconds=stream_duration,
         market_data_type=int(stream_data.get("market_data_type", 3)),
         flush_interval_seconds=max(
             float(stream_data.get("flush_interval_seconds", 5.0)), 0.1

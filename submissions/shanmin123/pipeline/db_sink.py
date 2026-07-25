@@ -234,18 +234,27 @@ def derived_frame_to_platform(frame, interval=DAILY_INTERVAL):
 
 
 def _execute(sql, mapped, connection_factory):
+    """Run a paged upsert and return how many rows the database actually wrote.
+
+    The statement must end in RETURNING: execute_values pages the batch and
+    psycopg2 documents that cursor.rowcount does not hold the total, so the
+    count comes from the returned rows across every page. Rows rejected by a
+    conflict clause simply do not come back.
+    """
     if not mapped:
         return 0
     from psycopg2.extras import execute_values
 
     conn = connection_factory()
+    written = 0
     try:
         with conn.cursor() as cur:
-            execute_values(cur, sql, mapped)
+            returned = execute_values(cur, sql, mapped, fetch=True)
+            written = len(returned or [])
         conn.commit()
     finally:
         conn.close()
-    return len(mapped)
+    return written
 
 
 def write_quotes(rows, market_data_type=3, connection_factory=get_connection):
@@ -258,6 +267,7 @@ def write_quotes(rows, market_data_type=3, connection_factory=get_connection):
              market_data_type, source)
         VALUES %s
         ON CONFLICT (ticker, timestamp_ms, field, source) DO NOTHING
+        RETURNING 1
         """,
         quote_rows_to_platform(rows, market_data_type),
         connection_factory,
@@ -283,6 +293,7 @@ def _write_derived(table, key_column, frame, interval, connection_factory):
             computed_at_utc = EXCLUDED.computed_at_utc
         WHERE EXCLUDED.computed_at_utc >= {table}.computed_at_utc
           AND (EXCLUDED.is_provisional = FALSE OR {table}.is_provisional = TRUE)
+        RETURNING 1
     """.format(table=table, key=key_column)
     sent = _execute(sql, derived_frame_to_platform(frame, interval), connection_factory)
     if sent:

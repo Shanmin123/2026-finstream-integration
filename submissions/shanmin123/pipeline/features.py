@@ -77,8 +77,12 @@ def _wilder_smooth(series, period):
     out[seed_at] = average
     for i in range(seed_at + 1, len(values)):
         x = values[i]
-        if not np.isnan(x):
-            average = (average * (period - 1) + x) / period
+        if np.isnan(x):
+            # No observation for this row: the smoothed value is unknown, not
+            # "the same as yesterday". The running average is left untouched so
+            # the series resumes correctly at the next real observation.
+            continue
+        average = (average * (period - 1) + x) / period
         out[i] = average
     return pd.Series(out, index=series.index)
 

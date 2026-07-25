@@ -108,12 +108,14 @@ Deduplication key: `(symbol, tick_time_utc, field)`.
 | Column | Spark type | Description |
 | --- | --- | --- |
 | `tick_time_utc` | string | Tick receipt time, ISO 8601 UTC |
+| `session_date` | string | Exchange-local trading session (America/New_York), which is what the partition uses: an extended-hours tick received after UTC midnight still belongs to the previous session |
 | `symbol` | string | Requested stock symbol |
-| `field` | string | `last`, `bid`, `ask`, `close`, `high`, `low`, `last_size`, `bid_size`, `ask_size`, `volume` |
+| `field` | string | `last`, `bid`, `ask`, `open`, `close`, `high`, `low`, `last_size`, `bid_size`, `ask_size`, `volume`. Note `close` is IB's PREVIOUS-session close and is never used as the live price |
 | `value` | double | Tick value |
 | `retrieved_at_utc` | string | Stream-batch write timestamp, ISO 8601 UTC |
 
-Final partition path: `quotes/event_date=YYYY-MM-DD/symbol=SYMBOL/part-000.parquet`.
+Final partition path: `quotes/event_date=YYYY-MM-DD/symbol=SYMBOL/part-000.parquet`,
+partitioned on `session_date`.
 Collected with `reqMktData` market data type 3 (delayed, the free paper tier,
 15-20 minutes behind); with live market-data subscriptions the same command
 streams real time (`stream.market_data_type: 1`).
@@ -122,9 +124,11 @@ streams real time (`stream.market_data_type: 1`).
 
 `indicators_live` and `alphas_live` carry the same columns as the daily datasets
 plus `as_of_utc` (refresh time) and `provisional` (always true). Each row is the
-latest intraday value: the newest streamed `last` price is appended to the daily
-series as a provisional bar (open=high=low=close=last, volume 0) and the daily
-formulas are recomputed. Values converge to the final daily rows once the real
+latest intraday value: the streamed `last` price becomes the provisional close
+and the daily formulas are recomputed. Fields the stream has not reported
+(open/high/low/volume) stay unknown rather than being filled with the last
+price, so any value that needs them — `atr_14`, `obv`, and the range-based
+alphas — is NaN until the corresponding tick arrives. Values converge to the final daily rows once the real
 bar is collected. Partition path mirrors the daily datasets
 (`indicators_live/event_year=YYYY/symbol=SYMBOL/part-000.parquet`); dedup key
 `(symbol, event_date)` keeps the newest refresh.
@@ -149,10 +153,17 @@ Known limits, recorded rather than hidden:
 
 * `quote_ticks` keys on millisecond timestamps, so two updates to the same field
   inside one millisecond collide in PostgreSQL (both are kept in parquet).
-* `alpha_20` is cross-sectional: its rank is taken over the symbols present in
-  the panel being computed. Running it over a historical backfill with today's
-  membership would rank past dates against today's constituents, so the batch
-  job takes the universe from the point-in-time symbols file rather than the
-  live active list.
+* `alpha_20` is cross-sectional: its rank is taken over whichever symbols are in
+  the panel. The symbols file is a snapshot of names trading at one date, not
+  dated membership, so a multi-year backfill ranks past dates against a later
+  constituent set. Historical `alpha_20` is therefore survivorship-affected;
+  removing that needs a membership table with effective dates. The daily
+  forward-computed values are unaffected.
 * Each flush rewrites the affected symbol/day quote partition, so per-flush cost
   grows with the day's tick count for a symbol.
+* The live recomputation is scoped to the symbols that ticked in that interval
+  and to a bounded warm window, which keeps a normal flush well inside the
+  interval (measured on the 658-symbol panel: 0.09s for 2 moved symbols, 0.65s
+  for 20, 2.8s for 100). If nearly the whole universe ticks inside one interval
+  the work approaches ~18s, so a large universe wants a flush interval sized
+  accordingly.

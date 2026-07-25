@@ -28,8 +28,10 @@ output:
     indicators, alphas, streaming quotes, and provisional live-feature datasets)
   update_frequency: >-
     Continuous for quotes and live features (stream-pipeline, micro-batched at
-    the configured flush interval); daily scheduled collection for prices, news,
-    and the batch indicator/alpha datasets
+    the configured flush interval); daily cadence for prices, news, and the
+    batch indicator/alpha datasets. The Airflow DAGs ship with schedule=None
+    pending lab bring-up, so today those daily runs are triggered manually or
+    by the documented cron expressions once enabled
 
 storage_policy:
   raw_data_location: >-

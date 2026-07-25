@@ -244,7 +244,11 @@ class LayeredStorage:
         if frame.empty:
             return {}
         frame = frame.copy()
-        frame["event_date"] = frame["tick_time_utc"].astype(str).str[:10]
+        frame["event_date"] = (
+            frame["session_date"].astype(str)
+            if "session_date" in frame
+            else frame["tick_time_utc"].astype(str).str[:10]
+        )
         bars = {}
         for symbol, symbol_frame in frame.groupby("symbol"):
             # One session only: mixing today's last with yesterday's high would
@@ -312,22 +316,32 @@ class LayeredStorage:
             final_paths=final_paths,
         )
 
-    QUOTE_COLUMNS = ("tick_time_utc", "symbol", "field", "value", "retrieved_at_utc")
+    QUOTE_COLUMNS = (
+        "tick_time_utc", "session_date", "symbol", "field", "value",
+        "retrieved_at_utc",
+    )
 
     def write_quotes(self, rows, request, retrieved_at_utc, run_id):
         raw_path = self._write_raw("quotes", rows, request, retrieved_at_utc, run_id)
-        frame = pd.DataFrame(rows, columns=list(self.QUOTE_COLUMNS[:-1])) if rows else pd.DataFrame(columns=list(self.QUOTE_COLUMNS))
+        frame = pd.DataFrame(rows) if rows else pd.DataFrame(columns=list(self.QUOTE_COLUMNS))
         final_paths = []
         final_rows = 0
         if not frame.empty:
             frame = frame.copy()
             frame["retrieved_at_utc"] = _iso_utc(retrieved_at_utc)
             frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+            if "session_date" not in frame or frame["session_date"].isna().any():
+                # Rows recorded before session_date existed: fall back to the
+                # receipt date so old corpora stay readable.
+                frame["session_date"] = frame.get(
+                    "session_date", pd.Series(index=frame.index, dtype=object)
+                ).fillna(frame["tick_time_utc"].astype(str).str[:10])
             frame = frame.loc[:, list(self.QUOTE_COLUMNS)].drop_duplicates(
                 subset=["symbol", "tick_time_utc", "field"], keep="last"
             )
-            dates = frame["tick_time_utc"].str[:10]
-            for (event_date, symbol), part in frame.groupby([dates, frame["symbol"]], sort=True):
+            for (event_date, symbol), part in frame.groupby(
+                [frame["session_date"], frame["symbol"]], sort=True
+            ):
                 final_path = (
                     self.final_dir
                     / "quotes"

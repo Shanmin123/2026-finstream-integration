@@ -107,30 +107,6 @@ def _quote(symbol, field, value, when):
 def test_quote_bars_use_one_session_and_ignore_the_previous_close_tick(tmp_path):
     storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
     rows = [
-        # yesterday's session
-        _quote("AAPL", "high", 999.0, "2026-07-24T20:00:00+00:00"),
-        _quote("AAPL", "last", 200.0, "2026-07-24T20:00:00+00:00"),
-        # today's
-        _quote("AAPL", "last", 250.0, "2026-07-25T14:00:00+00:00"),
-        _quote("AAPL", "high", 252.0, "2026-07-25T14:00:01+00:00"),
-        # IB's `close` tick is the PREVIOUS close and must not become today's
-        _quote("AAPL", "close", 199.0, "2026-07-25T14:00:02+00:00"),
-    ]
-    storage.write_quotes(rows, {}, "2026-07-25T14:01:00+00:00", "bars-test")
-    bars = storage.read_latest_quote_bars()
-    bar = bars["AAPL"]
-    assert bar["event_date"] == "2026-07-25"
-    assert bar["close"] == 250.0        # from `last`, not the close tick
-    assert bar["high"] == 252.0         # today's high, not yesterday's 999
-
-
-def _quote(symbol, field, value, when):
-    return {"tick_time_utc": when, "symbol": symbol, "field": field, "value": value}
-
-
-def test_quote_bars_use_one_session_and_ignore_the_previous_close_tick(tmp_path):
-    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
-    rows = [
         _quote("AAPL", "high", 999.0, "2026-07-24T20:00:00+00:00"),
         _quote("AAPL", "last", 200.0, "2026-07-24T20:00:00+00:00"),
         _quote("AAPL", "last", 250.0, "2026-07-25T14:00:00+00:00"),

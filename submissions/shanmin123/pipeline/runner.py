@@ -1,5 +1,9 @@
 import logging
 import time
+
+#: Trailing rows kept warm per symbol for the live recomputation. The longest
+#: lookback in features.py is the 252-day z-score history plus its window.
+WARM_HISTORY_ROWS = 300
 from datetime import datetime, timedelta, timezone
 
 
@@ -203,6 +207,12 @@ class PipelineRunner:
         return summary
 
     def run_stream(self):
+        if not self.config.stream.symbols:
+            raise RuntimeError(
+                "stream.symbols is empty: list the symbols to subscribe to in the "
+                "config's stream section."
+            )
+
         def stream():
             rows = self.client.stream_quotes(
                 self.config.stream.symbols,
@@ -253,8 +263,22 @@ class PipelineRunner:
             raise RuntimeError(
                 "No final prices found. Run collect-prices before stream-pipeline."
             )
+        # The longest lookback any indicator or alpha uses is well under a year;
+        # keeping the whole multi-year history in the per-flush recomputation
+        # made a full-universe refresh slower than the flush interval.
+        warm = (
+            prices.sort_values(["symbol", "event_date"])
+            .groupby("symbol", sort=False)
+            .tail(WARM_HISTORY_ROWS)
+            .reset_index(drop=True)
+        )
         cfg = self.config.stream
         symbols = list(cfg.symbols)
+        if not symbols:
+            raise RuntimeError(
+                "stream.symbols is empty: list the symbols to subscribe to in the "
+                "config's stream section."
+            )
         state = {"ticks": 0, "quote_rows": 0, "feature_rows": 0, "flushes": 0}
         # Latest observed value per (symbol, field): the provisional bar carries
         # the real streamed open/high/low/volume, never a fabricated one.
@@ -264,6 +288,7 @@ class PipelineRunner:
             rows = self.client.drain_ticks()
             if not rows:
                 return
+            moved = set()
             now = self._utc_now()
             state["ticks"] += len(rows)
             state["flushes"] += 1
@@ -279,16 +304,34 @@ class PipelineRunner:
                 # `close` is IB's previous-session close, not today's price.
                 if field not in ("last", "open", "high", "low", "volume"):
                     continue
-                event_date = row["tick_time_utc"][:10]
+                event_date = row.get("session_date") or row["tick_time_utc"][:10]
                 bar = bars.setdefault(row["symbol"], {})
                 if bar.get("event_date") != event_date:
                     bar.clear()          # new session: never mix days in one bar
                     bar["event_date"] = event_date
                 bar["close" if field == "last" else field] = row["value"]
-            priced = {s: b for s, b in bars.items() if b.get("close") is not None}
+                moved.add(row["symbol"])
+            # Only the symbols that actually ticked in THIS flush, and only the
+            # current session: a persistent bars dict would keep re-emitting a
+            # stale row for a symbol that has stopped trading.
+            current = max(
+                (b["event_date"] for b in bars.values() if b.get("event_date")),
+                default=None,
+            )
+            priced = {
+                symbol: bar
+                for symbol, bar in bars.items()
+                if symbol in moved
+                and bar.get("close") is not None
+                and bar.get("event_date") == current
+            }
             if not priced:
                 return
-            live_i, live_a = compute_live_features(prices, priced, now.isoformat())
+            # Recompute over the moved symbols only: passing the whole warm
+            # panel made every flush sort and group all 658 symbols, which on a
+            # full universe costs more than the flush interval itself.
+            subset = warm[warm["symbol"].isin(priced)]
+            live_i, live_a = compute_live_features(subset, priced, now.isoformat())
             for dataset, frame in (
                 ("indicators_live", live_i),
                 ("alphas_live", live_a),
@@ -319,7 +362,12 @@ class PipelineRunner:
             )
             try:
                 while deadline is None or time.time() < deadline:
-                    self.sleep_fn(cfg.flush_interval_seconds)
+                    # Never sleep past the deadline: a flush interval longer
+                    # than the run would otherwise overshoot it.
+                    nap = cfg.flush_interval_seconds
+                    if deadline is not None:
+                        nap = min(nap, max(0.0, deadline - time.time()))
+                    self.sleep_fn(nap)
                     flush()
             except KeyboardInterrupt:
                 self.logger.info(

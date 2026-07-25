@@ -8,6 +8,16 @@ from ibapi.contract import Contract
 from ibapi.wrapper import EWrapper
 
 
+US_EXCHANGE_TZ = "America/New_York"
+
+
+def session_date_of(moment):
+    """Exchange-local trading date for a UTC instant (US equities)."""
+    import pandas as pd
+
+    return str(pd.Timestamp(moment).tz_convert(US_EXCHANGE_TZ).date())
+
+
 class IBRequestError(RuntimeError):
     def __init__(self, request_id, error_code, message):
         self.request_id = request_id
@@ -370,8 +380,13 @@ class IBApiClient(EWrapper, EClient):
         symbol = self._stream_symbols.get(request_id)
         if symbol is None or field is None or value in (None, -1):
             return
+        received = datetime.now(timezone.utc)
         row = {
-            "tick_time_utc": datetime.now(timezone.utc).isoformat(),
+            "tick_time_utc": received.isoformat(),
+            # The trading session is an exchange-local concept: a US
+            # extended-hours tick received after UTC midnight still belongs to
+            # the previous session, so the receipt date would misfile it.
+            "session_date": session_date_of(received),
             "symbol": symbol,
             "field": field,
             "value": float(value),

@@ -58,3 +58,35 @@ def test_config_module_uses_python38_compatible_annotations():
 
     assert " | None" not in text
     assert "list[" not in text
+
+
+def test_zero_stream_duration_is_the_documented_unbounded_mode(tmp_path):
+    # README and config.example advertise duration_seconds: 0 as "run until
+    # stopped"; a positive-only validator rejected exactly that.
+    import yaml
+
+    from pipeline.config import load_config
+
+    base = yaml.safe_load(open("config.example.yaml", encoding="utf-8"))
+    base["stream"]["duration_seconds"] = 0
+    base["prices"]["symbols"] = ["AAPL"]
+    base["prices"].pop("symbols_file", None)
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    assert load_config(str(path)).stream.duration_seconds == 0
+
+
+def test_negative_stream_duration_is_rejected(tmp_path):
+    import pytest as _pytest
+    import yaml
+
+    from pipeline.config import ConfigError, load_config
+
+    base = yaml.safe_load(open("config.example.yaml", encoding="utf-8"))
+    base["stream"]["duration_seconds"] = -5
+    base["prices"]["symbols"] = ["AAPL"]
+    base["prices"].pop("symbols_file", None)
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    with _pytest.raises(ConfigError):
+        load_config(str(path))

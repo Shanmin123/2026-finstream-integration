@@ -285,3 +285,15 @@ def test_live_row_keeps_indicators_whose_inputs_were_streamed():
     )
     row = live_i.iloc[0]
     assert not pd.isna(row["atr_14"]) and not pd.isna(row["obv"])
+
+
+def test_wilder_leaves_a_missing_observation_unknown():
+    # A data gap must not report yesterday's smoothed value as today's; the
+    # running average resumes correctly at the next real observation.
+    from pipeline.features import _wilder_smooth
+
+    values = pd.Series([1.0] * 14 + [np.nan, 1.0])
+    out = _wilder_smooth(values, 14)
+    assert out.iloc[13] == pytest.approx(1.0)     # seeded
+    assert pd.isna(out.iloc[14])                  # the gap stays unknown
+    assert out.iloc[15] == pytest.approx(1.0)     # and the series resumes

@@ -206,7 +206,10 @@ def test_stream_pipeline_is_tick_driven_and_writes_each_flush(pipeline_config, t
     pipeline_config = dataclasses.replace(
         pipeline_config,
         stream=dataclasses.replace(
-            pipeline_config.stream, duration_seconds=1, flush_interval_seconds=0.1
+            pipeline_config.stream,
+            symbols=("AAPL",),
+            duration_seconds=1,
+            flush_interval_seconds=0.1,
         ),
     )
     # Seed a price history so live features have warm state.
@@ -266,3 +269,61 @@ def test_stream_pipeline_is_tick_driven_and_writes_each_flush(pipeline_config, t
     frame = pd.read_parquet(live[0])
     # The last flush wins: the newest streamed price drives the provisional row.
     assert bool(frame.iloc[-1]["provisional"]) is True
+
+
+def test_stream_recomputes_only_symbols_that_ticked(pipeline_config, tmp_path):
+    """A symbol that stops trading must not keep getting fresh feature rows,
+    and the recomputation must not scan the whole universe every flush."""
+    import dataclasses
+
+    import pandas as pd
+
+    storage = LayeredStorage(
+        pipeline_config.paths.raw_data_dir,
+        pipeline_config.paths.intermediate_data_dir,
+        pipeline_config.paths.output_dir,
+    )
+    dates = pd.date_range("2026-01-02", periods=40, freq="B").strftime("%Y-%m-%d")
+    for symbol in ("AAA", "BBB"):
+        storage.write_prices(
+            [
+                {
+                    "event_date": d, "symbol": symbol, "con_id": 1,
+                    "exchange": "SMART", "currency": "USD", "open": 100.0 + i,
+                    "high": 101.0 + i, "low": 99.0 + i, "close": 100.5 + i,
+                    "volume": 1000.0, "bar_count": 5, "wap": 100.2 + i,
+                }
+                for i, d in enumerate(dates)
+            ],
+            {"symbol": symbol}, "2026-07-24T00:00:00+00:00", "seed-" + symbol,
+        )
+
+    def tick(symbol, value):
+        return {
+            "tick_time_utc": "2026-07-25T14:00:00+00:00",
+            "session_date": "2026-07-25", "symbol": symbol,
+            "field": "last", "value": value,
+        }
+
+    # Both move, then only AAA moves.
+    client = FakeStreamClient([[tick("AAA", 150.0), tick("BBB", 90.0)], [tick("AAA", 151.0)]])
+    config = dataclasses.replace(
+        pipeline_config,
+        stream=dataclasses.replace(
+            pipeline_config.stream, symbols=("AAA", "BBB"),
+            duration_seconds=1, flush_interval_seconds=0.1,
+        ),
+    )
+    runner = PipelineRunner(
+        config=config, client=client, storage=storage,
+        checkpoint=CheckpointStore(config.paths.checkpoint_file),
+        now_fn=lambda: datetime(2026, 7, 25, 14, 5, tzinfo=timezone.utc),
+        sleep_fn=lambda _s: None,
+    )
+    result = runner.run_stream_pipeline()
+    assert result["ticks"] == 3
+    # First flush wrote both symbols, the second only AAA: 3 feature rows per
+    # dataset, not 4 (BBB is not re-emitted with a newer as_of when it is quiet).
+    live = storage.read_final_dataset("indicators_live")
+    assert set(live["symbol"]) == {"AAA", "BBB"}
+    assert len(live) == 2                       # one current row per symbol
