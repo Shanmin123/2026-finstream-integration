@@ -66,6 +66,12 @@ def ibkr_stream():
         summary["quote_ticks_loaded"] = db_sink.write_quotes(
             quotes, market_data_type=config.stream.market_data_type
         )
+        summary["indicators_loaded"] = db_sink.write_indicators(
+            runner.storage.read_final_dataset("indicators_live")
+        )
+        summary["alphas_loaded"] = db_sink.write_alphas(
+            runner.storage.read_final_dataset("alphas_live")
+        )
         logger.info(
             "stream run complete: %s ticks, %s live feature rows",
             summary["ticks"],

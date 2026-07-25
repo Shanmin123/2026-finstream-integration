@@ -85,11 +85,14 @@ class LayeredStorage:
 
     def _write_raw(self, dataset, rows, request, retrieved_at_utc, run_id):
         retrieval_date = _iso_utc(retrieved_at_utc)[:10]
+        # run_id is only second-precision, but sub-second stream flushes are
+        # allowed; a microsecond suffix keeps every microbatch its own file.
+        stamp = _iso_utc(retrieved_at_utc)[11:].replace(":", "").replace(".", "")
         path = (
             self.raw_dir
             / dataset
             / ("retrieval_date=" + retrieval_date)
-            / (_safe_component(run_id) + ".jsonl")
+            / (_safe_component(run_id) + "-" + _safe_component(stamp) + ".jsonl")
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -214,6 +217,40 @@ class LayeredStorage:
         if not frames:
             return []
         return pd.concat(frames, ignore_index=True).to_dict("records")
+
+    def read_final_dataset(self, dataset):
+        """Load a final dataset (indicators_live, alphas_live, ...) as one frame."""
+        root = self.final_dir / dataset
+        paths = sorted(root.glob("event_year=*/symbol=*/part-000.parquet"))
+        if not paths:
+            return pd.DataFrame()
+        return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+
+    def read_latest_quote_bars(self):
+        """Latest streamed value per (symbol, field) -> partial bars.
+
+        {symbol: {"event_date": ..., "close": last, "high": ..., "low": ...,
+        "open": ..., "volume": ...}} with only the fields the stream reported.
+        """
+        root = self.final_dir / "quotes"
+        paths = sorted(root.glob("event_date=*/symbol=*/part-000.parquet"))
+        if not paths:
+            return {}
+        frame = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+        wanted = ("last", "open", "high", "low", "close", "volume")
+        frame = frame[frame["field"].isin(wanted)]
+        if frame.empty:
+            return {}
+        frame = frame.sort_values("tick_time_utc").groupby(
+            ["symbol", "field"]
+        ).tail(1)
+        bars = {}
+        for _, row in frame.iterrows():
+            bar = bars.setdefault(row["symbol"], {})
+            bar["event_date"] = str(row["tick_time_utc"])[:10]
+            field = "close" if row["field"] == "last" else row["field"]
+            bar[field] = float(row["value"])
+        return {s: b for s, b in bars.items() if b.get("close") is not None}
 
     def read_latest_quote_last(self):
         """Latest streamed `last` tick per symbol -> {symbol: (value, event_date)}."""

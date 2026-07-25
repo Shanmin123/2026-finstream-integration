@@ -10,6 +10,8 @@ from pipeline.db_sink import (
 
 
 class FakeCursor:
+    rowcount = 1                       # psycopg2 reports rows actually inserted
+
     def __init__(self, store, rows=None):
         self.store = store
         self._rows = rows or []
@@ -175,3 +177,47 @@ def test_indicator_upsert_lets_the_newer_computation_win(monkeypatch):
     assert "ON CONFLICT (ticker, timestamp_ms, indicator_name, interval, source)" in sql
     assert "DO UPDATE SET" in sql
     assert "EXCLUDED.computed_at_utc >= technical_indicators.computed_at_utc" in sql
+
+
+def test_derived_upsert_refuses_to_downgrade_a_final_value(monkeypatch):
+    import pandas as pd
+
+    from pipeline.db_sink import write_indicators
+
+    captured = {}
+    monkeypatch.setattr(
+        "psycopg2.extras.execute_values",
+        lambda cur, sql, values: captured.update(sql=sql),
+        raising=False,
+    )
+    frame = pd.DataFrame(
+        [{"symbol": "AAPL", "event_date": "2026-07-24", "rsi_14": 65.2,
+          "computed_at_utc": "2026-07-25T00:00:00+00:00"}]
+    )
+    write_indicators(frame, connection_factory=lambda: FakeConn([]))
+    sql = captured["sql"]
+    # A newer provisional row must not overwrite a final one.
+    assert "EXCLUDED.is_provisional = FALSE OR technical_indicators.is_provisional = TRUE" in sql
+
+
+def test_price_write_reports_rows_actually_inserted(monkeypatch):
+    """price_data's unique key excludes source, so an existing bar wins; the
+    write must report what really landed rather than what was sent."""
+    from pipeline.db_sink import write_prices
+
+    class ConflictCursor(FakeCursor):
+        rowcount = 0                      # every row conflicted
+
+    class ConflictConn(FakeConn):
+        def cursor(self):
+            return ConflictCursor(self.store)
+
+    monkeypatch.setattr(
+        "psycopg2.extras.execute_values", lambda *_a, **_k: None, raising=False
+    )
+    sent = write_prices(
+        [{"event_date": "2026-07-24", "symbol": "AAPL", "open": 1.0, "high": 2.0,
+          "low": 0.5, "close": 1.5, "volume": 100.0}],
+        connection_factory=lambda: ConflictConn([]),
+    )
+    assert sent == 0

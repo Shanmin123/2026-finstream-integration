@@ -135,7 +135,7 @@ DDL: `pipeline/db/init_postgres/ibkr_tables.sql`. All rows carry `source='ibkr'`
 
 | Table | Key | Conflict policy |
 | --- | --- | --- |
-| `price_data` (platform's own) | `(ticker, timestamp_ms, interval)` | DO NOTHING |
+| `price_data` (platform's own) | `(ticker, timestamp_ms, interval)` | DO NOTHING — the constraint excludes `source`, so an IBKR bar cannot coexist with a primary-feed bar for the same ticker/day. This feed therefore fills gaps and is a no-op elsewhere; the writer logs how many rows actually landed. Coexistence would need `source` added to that constraint by the table's owner. |
 | `quote_ticks` | `(ticker, timestamp_ms, field, source)` | DO NOTHING (immutable observations); `market_data_type` records 1 = real time, 3 = delayed |
 | `technical_indicators` | `(ticker, timestamp_ms, indicator_name, interval, source)` | DO UPDATE when `computed_at_utc` is newer |
 | `alpha_factors` | `(ticker, timestamp_ms, alpha_id, interval, source)` | DO UPDATE when `computed_at_utc` is newer |
@@ -144,3 +144,15 @@ The derived tables are long `(name, value)` rather than one column per
 indicator, matching this project's existing collectors: adding an indicator or
 an alpha formula needs no migration. `is_provisional` marks an intraday value
 computed from a streamed price; the end-of-day run overwrites it in place.
+
+Known limits, recorded rather than hidden:
+
+* `quote_ticks` keys on millisecond timestamps, so two updates to the same field
+  inside one millisecond collide in PostgreSQL (both are kept in parquet).
+* `alpha_20` is cross-sectional: its rank is taken over the symbols present in
+  the panel being computed. Running it over a historical backfill with today's
+  membership would rank past dates against today's constituents, so the batch
+  job takes the universe from the point-in-time symbols file rather than the
+  live active list.
+* Each flush rewrites the affected symbol/day quote partition, so per-flush cost
+  grows with the day's tick count for a symbol.

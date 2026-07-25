@@ -351,7 +351,9 @@ class IBApiClient(EWrapper, EClient):
 
     _TICK_PRICE_FIELDS = {
         1: "bid", 2: "ask", 4: "last", 6: "high", 7: "low", 9: "close",
+        14: "open",
         66: "bid", 67: "ask", 68: "last", 72: "high", 73: "low", 75: "close",
+        76: "open",
     }
     _TICK_SIZE_FIELDS = {
         0: "bid_size", 3: "ask_size", 5: "last_size", 8: "volume",

@@ -58,6 +58,31 @@ def _prepare(frame):
     return out
 
 
+def _wilder_smooth(series, period):
+    """Wilder's smoothing: seed with the simple mean of the first ``period``
+    observations, then avg_t = (avg_{t-1} * (period - 1) + x_t) / period.
+
+    pandas' ewm(adjust=False) seeds from the first observation instead, which
+    leaves a materially different level for the first weeks (RSI differed by
+    ~17 points on an alternating series). Wilder's seeding is what RSI(14) and
+    ATR(14) are defined as and what TA libraries report.
+    """
+    values = series.to_numpy(dtype="float64")
+    out = np.full(len(values), np.nan)
+    valid = np.flatnonzero(~np.isnan(values))
+    if len(valid) < period:
+        return pd.Series(out, index=series.index)
+    seed_at = valid[period - 1]
+    average = values[valid[:period]].mean()
+    out[seed_at] = average
+    for i in range(seed_at + 1, len(values)):
+        x = values[i]
+        if not np.isnan(x):
+            average = (average * (period - 1) + x) / period
+        out[i] = average
+    return pd.Series(out, index=series.index)
+
+
 def _delta(series, period):
     return series.diff(period)
 
@@ -96,8 +121,8 @@ def compute_indicators(prices, computed_at_utc):
         change = close.diff()
         gain = change.clip(lower=0.0)
         loss = (-change).clip(lower=0.0)
-        avg_gain = gain.ewm(alpha=1.0 / 14, adjust=False, min_periods=14).mean()
-        avg_loss = loss.ewm(alpha=1.0 / 14, adjust=False, min_periods=14).mean()
+        avg_gain = _wilder_smooth(gain, 14)
+        avg_loss = _wilder_smooth(loss, 14)
         rs = avg_gain / avg_loss
         rsi = 100.0 - (100.0 / (1.0 + rs))
         out["rsi_14"] = rsi.where(avg_loss > 0.0, 100.0).where(
@@ -115,9 +140,7 @@ def compute_indicators(prices, computed_at_utc):
             [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
             axis=1,
         ).max(axis=1)
-        out["atr_14"] = true_range.ewm(
-            alpha=1.0 / 14, adjust=False, min_periods=14
-        ).mean()
+        out["atr_14"] = _wilder_smooth(true_range, 14)
 
         direction = np.sign(change.fillna(0.0))
         out["obv"] = (direction * volume.fillna(0.0)).cumsum()
@@ -204,33 +227,38 @@ def compute_alphas(prices, computed_at_utc):
 LIVE_EXTRA_COLUMNS = ("as_of_utc", "provisional")
 
 
-def compute_live_features(prices, last_by_symbol, as_of_utc):
+def compute_live_features(prices, bars_by_symbol, as_of_utc):
     """Provisional intraday refresh of the daily indicators and alphas.
 
-    For each symbol with a streamed last price, appends a provisional daily bar
-    (open=high=low=close=last, volume 0) dated by the tick's UTC date, recomputes
-    the daily features over the extended series, and returns only that provisional
-    last row per symbol. Values converge to the final ones once the real daily bar
-    replaces the provisional close. Returns (indicators_frame, alphas_frame).
+    ``bars_by_symbol`` maps a symbol to the partial bar the stream has observed
+    so far: ``{"event_date": "YYYY-MM-DD", "close": float}`` plus whichever of
+    ``open``/``high``/``low``/``volume`` have ticked. Fields the stream has not
+    reported stay NaN rather than being filled with the last price: a fabricated
+    open/high/low would silently turn range-based formulas into constants
+    (alpha_101 collapses to 0, alpha_53/54 divide by zero). With NaN the affected
+    values come out NaN, which is the honest "not yet known".
+
+    Returns only the provisional last row per symbol, tagged ``provisional``.
+    Values converge to the final ones once the real daily bar replaces them.
     """
     data = _prepare(prices)
     extended = []
     for symbol, g in data.groupby("symbol", sort=True):
-        tick = last_by_symbol.get(symbol)
-        if tick is None:
+        bar = bars_by_symbol.get(symbol)
+        if not bar or bar.get("close") is None:
             continue
-        last_price, tick_date = float(tick[0]), str(tick[1])
+        tick_date = str(bar["event_date"])
         g = g[g["event_date"] < tick_date]
         if g.empty:
             continue
         provisional = {
             "symbol": symbol,
             "event_date": tick_date,
-            "open": last_price,
-            "high": last_price,
-            "low": last_price,
-            "close": last_price,
-            "volume": 0.0,
+            "open": bar.get("open", np.nan),
+            "high": bar.get("high", np.nan),
+            "low": bar.get("low", np.nan),
+            "close": float(bar["close"]),
+            "volume": bar.get("volume", np.nan),
         }
         extended.append(pd.concat([g, pd.DataFrame([provisional])], ignore_index=True))
     if not extended:
@@ -242,6 +270,8 @@ def compute_live_features(prices, last_by_symbol, as_of_utc):
     alphas = compute_alphas(panel, as_of_utc)
     live_i = indicators.sort_values("event_date").groupby("symbol", sort=True).tail(1)
     live_a = alphas.sort_values("event_date").groupby("symbol", sort=True).tail(1)
+    live_i = live_i.copy()
+    live_a = live_a.copy()
     for frame in (live_i, live_a):
         frame["as_of_utc"] = as_of_utc
         frame["provisional"] = True

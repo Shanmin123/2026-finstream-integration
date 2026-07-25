@@ -2,9 +2,16 @@
 
 Maps this pipeline's rows onto the platform's existing `price_data` contract
 (ticker, timestamp_ms, datetime_utc, open, high, low, close, volume, interval,
-source) with the same idempotent conflict key (ticker, timestamp_ms, interval),
-and records each run in `pipeline_runs`. Rows carry source='ibkr' so they are
-distinguishable from the EODHD feed.
+source) and records each run in `pipeline_runs`.
+
+Note on price_data: the platform's constraint is UNIQUE(ticker, timestamp_ms,
+interval) and does NOT include source, so an IBKR bar cannot coexist with an
+EODHD bar for the same ticker/day. With the platform's DO NOTHING policy the
+existing row wins, which makes this feed a GAP FILLER: it supplies bars for
+tickers or days the primary feed has not covered, and is a no-op elsewhere. The
+write reports how many rows were actually inserted so the difference is visible
+rather than silent. Making both sources coexist would need the platform owner to
+add source to that constraint.
 
 psycopg2 is an optional dependency: the parquet datasets remain the primary
 output and the pipeline runs without a database. Connection settings come from
@@ -76,6 +83,7 @@ def write_prices(rows, connection_factory=get_connection):
     from psycopg2.extras import execute_values
 
     conn = connection_factory()
+    inserted = 0
     try:
         with conn.cursor() as cur:
             execute_values(
@@ -89,14 +97,24 @@ def write_prices(rows, connection_factory=get_connection):
                 """,
                 mapped,
             )
+            inserted = cur.rowcount if cur.rowcount is not None else 0
         conn.commit()
     finally:
         conn.close()
     logger.info(
         "db_write_complete",
-        extra={"dataset": "price_data", "symbol": "*", "rows": len(mapped)},
+        extra={"dataset": "price_data", "symbol": "*", "rows": inserted},
     )
-    return len(mapped)
+    if inserted < len(mapped):
+        logger.info(
+            "db_rows_already_present",
+            extra={
+                "dataset": "price_data",
+                "symbol": "*",
+                "rows": len(mapped) - inserted,
+            },
+        )
+    return inserted
 
 
 def record_run(dag_id, records, latency_seconds, status, error=None,
@@ -259,6 +277,7 @@ def _write_derived(table, key_column, frame, interval, connection_factory):
             is_provisional = EXCLUDED.is_provisional,
             computed_at_utc = EXCLUDED.computed_at_utc
         WHERE EXCLUDED.computed_at_utc >= {table}.computed_at_utc
+          AND (EXCLUDED.is_provisional = FALSE OR {table}.is_provisional = TRUE)
     """.format(table=table, key=key_column)
     sent = _execute(sql, derived_frame_to_platform(frame, interval), connection_factory)
     if sent:

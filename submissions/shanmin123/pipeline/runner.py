@@ -256,7 +256,9 @@ class PipelineRunner:
         cfg = self.config.stream
         symbols = list(cfg.symbols)
         state = {"ticks": 0, "quote_rows": 0, "feature_rows": 0, "flushes": 0}
-        last_by_symbol = {}
+        # Latest observed value per (symbol, field): the provisional bar carries
+        # the real streamed open/high/low/volume, never a fabricated one.
+        bars = {}
 
         def flush():
             rows = self.client.drain_ticks()
@@ -273,16 +275,16 @@ class PipelineRunner:
             )
             state["quote_rows"] += result.final_rows
             for row in rows:
-                if row["field"] == "last":
-                    last_by_symbol[row["symbol"]] = (
-                        row["value"],
-                        row["tick_time_utc"][:10],
-                    )
-            if not last_by_symbol:
+                field = row["field"]
+                if field not in ("last", "open", "high", "low", "volume", "close"):
+                    continue
+                bar = bars.setdefault(row["symbol"], {})
+                bar["event_date"] = row["tick_time_utc"][:10]
+                bar["close" if field == "last" else field] = row["value"]
+            priced = {s: b for s, b in bars.items() if b.get("close") is not None}
+            if not priced:
                 return
-            live_i, live_a = compute_live_features(
-                prices, last_by_symbol, now.isoformat()
-            )
+            live_i, live_a = compute_live_features(prices, priced, now.isoformat())
             for dataset, frame in (
                 ("indicators_live", live_i),
                 ("alphas_live", live_a),
@@ -321,6 +323,9 @@ class PipelineRunner:
                     extra={"dataset": "quotes", "symbol": "*", "rows": 0},
                 )
             finally:
+                # Drain before cancelling: stop_quote_stream drops the request
+                # mapping, so ticks decoded after it would be discarded.
+                flush()
                 self.client.stop_quote_stream()
                 flush()
                 self.logger.info(
@@ -346,13 +351,13 @@ class PipelineRunner:
             raise RuntimeError(
                 "No final prices found. Run collect-prices before compute-live-features."
             )
-        last_by_symbol = self.storage.read_latest_quote_last()
-        if not last_by_symbol:
+        bars = self.storage.read_latest_quote_bars()
+        if not bars:
             raise RuntimeError(
                 "No streamed quotes found. Run stream-quotes before compute-live-features."
             )
         as_of = self._utc_now().isoformat()
-        live_i, live_a = compute_live_features(prices, last_by_symbol, as_of)
+        live_i, live_a = compute_live_features(prices, bars, as_of)
         summary = {}
         for dataset, frame in (("indicators_live", live_i), ("alphas_live", live_a)):
             result = self.storage.write_derived(

@@ -139,7 +139,8 @@ def test_live_features_converge_to_batch_when_last_equals_real_close():
     real_next = full.iloc[59]
     live_i, live_a = compute_live_features(
         history,
-        {"TEST": (float(real_next["close"]), str(real_next["event_date"]))},
+        {"TEST": {"event_date": str(real_next["event_date"]),
+                  "close": float(real_next["close"])}},
         COMPUTED_AT,
     )
     assert len(live_i) == 1 and len(live_a) == 1
@@ -162,3 +163,76 @@ def test_live_features_skip_symbols_without_ticks():
 
     live_i, live_a = compute_live_features(_prices(n=30), {}, COMPUTED_AT)
     assert live_i.empty and live_a.empty
+
+
+def test_wilder_rsi_matches_the_textbook_seeding():
+    # Wilder seeds the average gain/loss with the simple mean of the first 14
+    # changes; ewm(adjust=False) seeds from the first observation and was ~17
+    # RSI points off on this alternating series.
+    n = 40
+    close = pd.Series(100.0 + np.cumsum(np.where(np.arange(n) % 2 == 0, 1.0, -0.9)))
+    frame = pd.DataFrame(
+        {
+            "symbol": "T",
+            "event_date": pd.date_range("2026-01-02", periods=n, freq="B").strftime("%Y-%m-%d"),
+            "open": close - 0.2, "high": close + 0.5, "low": close - 0.5,
+            "close": close, "volume": 1000.0,
+        }
+    )
+    first = compute_indicators(frame, COMPUTED_AT)["rsi_14"].dropna().iloc[0]
+    change = close.diff()
+    expected = 100.0 - 100.0 / (
+        1.0
+        + change.clip(lower=0).iloc[1:15].mean() / (-change).clip(lower=0).iloc[1:15].mean()
+    )
+    assert first == pytest.approx(expected)
+
+
+def test_wilder_atr_matches_the_textbook_seeding():
+    n = 30
+    close = pd.Series(100.0 + np.arange(n) * 0.5)
+    frame = pd.DataFrame(
+        {
+            "symbol": "T",
+            "event_date": pd.date_range("2026-01-02", periods=n, freq="B").strftime("%Y-%m-%d"),
+            "open": close, "high": close + 1.0, "low": close - 1.0,
+            "close": close, "volume": 1000.0,
+        }
+    )
+    first = compute_indicators(frame, COMPUTED_AT)["atr_14"].dropna().iloc[0]
+    prev = close.shift(1)
+    tr = pd.concat(
+        [frame["high"] - frame["low"], (frame["high"] - prev).abs(),
+         (frame["low"] - prev).abs()], axis=1
+    ).max(axis=1)
+    assert first == pytest.approx(tr.iloc[1:15].mean())
+
+
+def test_live_features_do_not_fabricate_unobserved_fields():
+    # With only a last price, range/volume formulas must be NaN, not a
+    # fabricated constant (open=high=low=close made alpha_101 exactly 0 and
+    # alpha_53/54 NaN via a zero denominator).
+    from pipeline.features import compute_live_features
+
+    history = _prices(n=40)
+    _live_i, live_a = compute_live_features(
+        history, {"TEST": {"event_date": "2026-03-02", "close": 150.0}}, COMPUTED_AT
+    )
+    row = live_a.iloc[0]
+    assert pd.isna(row["alpha_101"])            # honest unknown, not 0.0
+    assert pd.isna(row["alpha_53"])
+
+
+def test_live_features_use_streamed_high_low_volume_when_present():
+    from pipeline.features import compute_live_features
+
+    history = _prices(n=40)
+    _live_i, live_a = compute_live_features(
+        history,
+        {"TEST": {"event_date": "2026-03-02", "close": 150.0, "open": 148.0,
+                  "high": 151.0, "low": 147.0, "volume": 5000.0}},
+        COMPUTED_AT,
+    )
+    row = live_a.iloc[0]
+    assert row["alpha_101"] == pytest.approx((150.0 - 148.0) / ((151.0 - 147.0) + 0.001))
+    assert not pd.isna(row["alpha_53"])

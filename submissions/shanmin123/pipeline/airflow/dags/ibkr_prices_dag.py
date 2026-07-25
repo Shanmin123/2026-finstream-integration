@@ -13,7 +13,11 @@ Data flow:
 
 Universe: pulled from the platform (`companies.is_active`) so the DAG does not
 hardcode a list; falls back to the configured symbols file when the database is
-unreachable.
+unreachable. Note this is the CURRENT membership and is right for the daily
+incremental run. A historical backfill must use the point-in-time symbols file
+instead, because `alpha_20` ranks cross-sectionally: ranking past dates against
+today's constituents would drop names that have since left the index and bias
+the factor.
 
 Requires an authenticated IB Gateway paper session reachable from the worker at
 IB_HOST/IB_PORT (the login itself is interactive and is not automated here).
@@ -111,9 +115,10 @@ def ibkr_prices():
         prices = runner.storage.read_final_prices()
         if prices.empty:
             return 0
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        recent = prices[prices["event_date"] >= today]
-        rows = (recent if not recent.empty else prices.tail(1000)).to_dict("records")
+        # The newest session present in the panel, across all symbols: a
+        # tail() would slice by the symbol-sorted order and miss most tickers.
+        latest = prices["event_date"].max()
+        rows = prices[prices["event_date"] == latest].to_dict("records")
         return db_sink.write_prices(rows)
 
     features = compute_features(collect_prices())
