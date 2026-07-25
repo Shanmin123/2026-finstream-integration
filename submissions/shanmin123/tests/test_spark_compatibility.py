@@ -1,7 +1,10 @@
 from datetime import datetime, timezone
 
+import numpy as np
+import pandas as pd
 from pyspark.sql import SparkSession
 
+from pipeline.features import compute_alphas, compute_indicators
 from pipeline.storage import LayeredStorage
 
 
@@ -56,14 +59,48 @@ def test_spark_351_reads_final_partitioned_parquet(pipeline_config):
         .config("spark.sql.shuffle.partitions", "1")
         .getOrCreate()
     )
+    # Derived datasets share the same partition writer; verify Spark reads them too.
+    n = 30
+    dates = pd.date_range("2025-01-02", periods=n, freq="B").strftime("%Y-%m-%d")
+    close = pd.Series(100.0 + np.arange(n))
+    synthetic = pd.DataFrame(
+        {
+            "symbol": "AAPL",
+            "event_date": dates,
+            "open": close - 0.5,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+            "volume": 1000.0,
+        }
+    )
+    indicators_result = storage.write_derived(
+        "indicators",
+        compute_indicators(synthetic, retrieved_at),
+        ("symbol", "event_date"),
+        "computed_at_utc",
+    )
+    alphas_result = storage.write_derived(
+        "alphas",
+        compute_alphas(synthetic, retrieved_at),
+        ("symbol", "event_date"),
+        "computed_at_utc",
+    )
+
     try:
         prices = spark.read.parquet(str(price_result.final_paths[0]))
         news = spark.read.parquet(str(news_result.final_paths[0]))
+        indicators = spark.read.parquet(str(indicators_result.final_paths[0]))
+        alphas = spark.read.parquet(str(alphas_result.final_paths[0]))
         assert prices.count() == 1
         assert news.count() == 1
         assert prices.select("symbol").first()[0] == "AAPL"
         assert news.select("provider_code").first()[0] == "BRFG"
         assert "event_date" in prices.columns
         assert "published_at_utc" in news.columns
+        assert indicators.count() == 30
+        assert "rsi_14" in indicators.columns
+        assert alphas.count() == 30
+        assert "alpha_101" in alphas.columns
     finally:
         spark.stop()

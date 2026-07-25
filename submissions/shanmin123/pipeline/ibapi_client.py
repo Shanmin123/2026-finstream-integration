@@ -182,10 +182,21 @@ class IBApiClient(EWrapper, EClient):
         return list(self._providers)
 
     def newsProviders(self, newsProviders):
-        self._providers = [
-            {"code": provider.providerCode, "name": provider.providerName}
-            for provider in newsProviders
-        ]
+        # ibapi 9.81 names the fields code/name; 10.x uses providerCode/providerName.
+        # Read both shapes, and never let a reader-thread exception escape (it would
+        # kill the socket reader and strand the session), record it instead.
+        try:
+            self._providers = [
+                {
+                    "code": getattr(provider, "providerCode", None)
+                    or getattr(provider, "code", ""),
+                    "name": getattr(provider, "providerName", None)
+                    or getattr(provider, "name", ""),
+                }
+                for provider in newsProviders
+            ]
+        except Exception as exc:  # pragma: no cover - defensive
+            self._providers_error = exc
         self._providers_event.set()
 
     def fetch_news_headlines(self, symbol, provider_codes, start, end, limit):
@@ -264,15 +275,31 @@ class IBApiClient(EWrapper, EClient):
             "close": bar.close,
             "volume": bar.volume,
             "bar_count": bar.barCount,
-            "wap": bar.average,
+            # ibapi 9.81 exposes the weighted average price as `average`; 10.x as `wap`.
+            "wap": getattr(bar, "wap", getattr(bar, "average", None)),
         }
 
     @staticmethod
     def _parse_news_time(value):
+        # ibapi 10.x emits compact times ("20260501 14:27:06.0"); 9.81 emits
+        # dash-separated ("2026-05-01 14:27:06.0"). Accept both, with or
+        # without the fractional part.
         clean = value.strip()
-        time_format = "%Y%m%d %H:%M:%S.%f" if "." in clean else "%Y%m%d %H:%M:%S"
-        parsed = datetime.strptime(clean, time_format)
-        return parsed.replace(tzinfo=timezone.utc).isoformat()
+        formats = (
+            "%Y%m%d %H:%M:%S.%f",
+            "%Y%m%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+        )
+        last_error = None
+        for time_format in formats:
+            try:
+                parsed = datetime.strptime(clean, time_format)
+            except ValueError as exc:
+                last_error = exc
+                continue
+            return parsed.replace(tzinfo=timezone.utc).isoformat()
+        raise last_error
 
     @staticmethod
     def _clean_headline(value):

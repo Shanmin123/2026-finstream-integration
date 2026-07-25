@@ -105,6 +105,26 @@ def test_ibapi_client_lists_provider_callbacks(monkeypatch):
     assert client.list_news_providers() == [{"code": "BRFG", "name": "Briefing.com"}]
 
 
+def test_news_providers_accepts_ibapi_981_field_names(monkeypatch):
+    # ibapi 9.81 (PyPI) names the fields code/name instead of providerCode/providerName.
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+
+    def req_news_providers():
+        client.newsProviders([SimpleNamespace(code="DJNL", name="Dow Jones")])
+
+    monkeypatch.setattr(client, "reqNewsProviders", req_news_providers)
+    assert client.list_news_providers() == [{"code": "DJNL", "name": "Dow Jones"}]
+
+
+def test_parse_news_time_accepts_both_ibapi_formats():
+    from pipeline.ibapi_client import IBApiClient
+
+    # 10.x compact and 9.81 dashed, with and without fractions.
+    assert IBApiClient._parse_news_time("20260501 14:27:06.0").startswith("2026-05-01T14:27:06")
+    assert IBApiClient._parse_news_time("2026-05-01 14:27:06.0").startswith("2026-05-01T14:27:06")
+    assert IBApiClient._parse_news_time("2026-05-01 14:27:06").startswith("2026-05-01T14:27:06")
+
+
 def test_ibapi_client_raises_request_errors_instead_of_returning_empty_data(
     monkeypatch,
 ):
