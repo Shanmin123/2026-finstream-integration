@@ -257,7 +257,7 @@ class PipelineRunner:
 
         return self._run_connected(stream)
 
-    def run_stream_pipeline(self):
+    def run_stream_pipeline(self, sink=None):
         """Continuous streaming pipeline: ticks in, features out, until stopped.
 
         One long-running process. The daily price history is loaded once as warm
@@ -335,6 +335,8 @@ class PipelineRunner:
                 and bar.get("event_date") == current
             }
             if not priced:
+                if sink is not None:
+                    sink(rows, None, None)
                 return
             # Recompute over the moved symbols only: passing the whole warm
             # panel made every flush sort and group all 658 symbols, which on a
@@ -359,6 +361,8 @@ class PipelineRunner:
                     dataset, frame, ("symbol", "event_date"), "as_of_utc"
                 )
                 state["feature_rows"] += written.final_rows
+            if sink is not None:
+                sink(rows, live_i, live_a)
             self.logger.info(
                 "stream_flush",
                 extra={

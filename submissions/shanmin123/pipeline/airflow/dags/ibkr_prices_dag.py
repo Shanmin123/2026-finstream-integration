@@ -45,7 +45,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime
 
 import pendulum
 from airflow.decorators import dag, task
@@ -112,19 +111,26 @@ def ibkr_prices():
 
     @task
     def load_features_to_postgres(_features: dict) -> dict:
-        """Upsert the derived indicator/alpha datasets into the platform tables."""
+        """Upsert the newest session's derived rows into the platform tables.
+
+        Reads what compute_features already wrote rather than recomputing it,
+        and pushes only the latest session: sending the whole panel would be
+        ~17 million long-format rows per daily run, nearly all of them
+        unchanged.
+        """
         from pipeline import db_sink
 
         _config, runner = _build_runner()
-        prices = runner.storage.read_final_prices()
-        if prices.empty:
-            return {"indicators": 0, "alphas": 0}
-        from pipeline.features import compute_alphas, compute_indicators
 
-        stamp = datetime.utcnow().replace(tzinfo=None).isoformat() + "+00:00"
+        def _latest(dataset):
+            frame = runner.storage.read_final_dataset(dataset)
+            if frame.empty:
+                return frame
+            return frame[frame["event_date"] == frame["event_date"].max()]
+
         return {
-            "indicators": db_sink.write_indicators(compute_indicators(prices, stamp)),
-            "alphas": db_sink.write_alphas(compute_alphas(prices, stamp)),
+            "indicators": db_sink.write_indicators(_latest("indicators")),
+            "alphas": db_sink.write_alphas(_latest("alphas")),
         }
 
     @task

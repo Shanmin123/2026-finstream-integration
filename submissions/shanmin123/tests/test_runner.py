@@ -362,3 +362,57 @@ def test_news_window_uses_the_format_reqhistoricalnews_accepts():
         datetime(2026, 7, 23, 2, 25, 50, tzinfo=timezone.utc)
     )
     assert formatted == "2026-07-23 02:25:50.0"
+
+
+def test_stream_sink_receives_only_the_current_flush_rows(pipeline_config, tmp_path):
+    """The DB loader must forward each flush's own rows. Re-reading the session
+    partitions afterwards would re-send the whole trading day on every
+    scheduled run."""
+    import dataclasses
+
+    import pandas as pd
+
+    storage = LayeredStorage(
+        pipeline_config.paths.raw_data_dir,
+        pipeline_config.paths.intermediate_data_dir,
+        pipeline_config.paths.output_dir,
+    )
+    dates = pd.date_range("2026-01-02", periods=40, freq="B").strftime("%Y-%m-%d")
+    storage.write_prices(
+        [
+            {
+                "event_date": d, "symbol": "AAA", "con_id": 1, "exchange": "SMART",
+                "currency": "USD", "open": 100.0 + i, "high": 101.0 + i,
+                "low": 99.0 + i, "close": 100.5 + i, "volume": 1000.0,
+                "bar_count": 5, "wap": 100.2 + i,
+            }
+            for i, d in enumerate(dates)
+        ],
+        {"symbol": "AAA"}, "2026-07-24T00:00:00+00:00", "seed",
+    )
+
+    def tick(value):
+        return {
+            "tick_time_utc": "2026-07-25T14:00:00+00:00",
+            "session_date": "2026-07-25", "symbol": "AAA",
+            "field": "last", "value": value,
+        }
+
+    client = FakeStreamClient([[tick(150.0)], [tick(151.0)]])
+    config = dataclasses.replace(
+        pipeline_config,
+        stream=dataclasses.replace(
+            pipeline_config.stream, symbols=("AAA",),
+            duration_seconds=1, flush_interval_seconds=0.1,
+        ),
+    )
+    runner = PipelineRunner(
+        config=config, client=client, storage=storage,
+        checkpoint=CheckpointStore(config.paths.checkpoint_file),
+        now_fn=lambda: datetime(2026, 7, 25, 14, 5, tzinfo=timezone.utc),
+        sleep_fn=lambda _s: None,
+    )
+    seen = []
+    runner.run_stream_pipeline(sink=lambda ticks, i, a: seen.append(len(ticks)))
+    # Two flushes of one tick each -- never the accumulated two.
+    assert seen == [1, 1]

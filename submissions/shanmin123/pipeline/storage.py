@@ -201,31 +201,6 @@ class LayeredStorage:
         merged = pd.concat(frames, ignore_index=True)
         return merged.sort_values(["symbol", "event_date"]).reset_index(drop=True)
 
-    def read_latest_quote_rows(self, event_date=None):
-        """All streamed tick rows for a date (default: the most recent one)."""
-        root = self.final_dir / "quotes"
-        paths = sorted(root.glob("event_date=*/symbol=*/part-000.parquet"))
-        if not paths:
-            return []
-        if event_date is None:
-            event_date = max(p.parent.parent.name.split("=", 1)[1] for p in paths)
-        frames = [
-            pd.read_parquet(p)
-            for p in paths
-            if p.parent.parent.name == "event_date=" + str(event_date)
-        ]
-        if not frames:
-            return []
-        return pd.concat(frames, ignore_index=True).to_dict("records")
-
-    def read_final_dataset(self, dataset):
-        """Load a final dataset (indicators_live, alphas_live, ...) as one frame."""
-        root = self.final_dir / dataset
-        paths = sorted(root.glob("event_year=*/symbol=*/part-000.parquet"))
-        if not paths:
-            return pd.DataFrame()
-        return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
-
     def read_latest_quote_bars(self):
         """Latest streamed value per (symbol, field) -> partial bars.
 

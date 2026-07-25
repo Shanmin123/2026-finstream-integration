@@ -66,28 +66,30 @@ def ibkr_stream():
                 "stream.duration_seconds must be positive for the Airflow task; "
                 "0 (run until stopped) is for the CLI only."
             )
-        runner = build_runner(config)
-        summary = runner.run_stream_pipeline()
         from pipeline import db_sink
 
-        quotes = runner.storage.read_latest_quote_rows()
-        summary["quote_ticks_loaded"] = db_sink.write_quotes(
-            quotes, market_data_type=config.stream.market_data_type
-        )
-        # Only the session just streamed: pushing every accumulated partition
-        # would re-send the whole history of provisional rows on every run.
-        def _current_session(dataset):
-            frame = runner.storage.read_final_dataset(dataset)
-            if frame.empty:
-                return frame
-            return frame[frame["event_date"] == frame["event_date"].max()]
+        runner = build_runner(config)
+        loaded = {"quotes": 0, "indicators": 0, "alphas": 0}
 
-        summary["indicators_loaded"] = db_sink.write_indicators(
-            _current_session("indicators_live")
-        )
-        summary["alphas_loaded"] = db_sink.write_alphas(
-            _current_session("alphas_live")
-        )
+        def load_flush(ticks, live_indicators, live_alphas):
+            """Forward exactly this flush's rows.
+
+            Re-reading the session's partitions after the run would re-send the
+            whole trading day on every scheduled run (13 times over a session at
+            a 30-minute cadence), which the conflict clauses would absorb but
+            the transport would not.
+            """
+            loaded["quotes"] += db_sink.write_quotes(
+                ticks, market_data_type=config.stream.market_data_type
+            )
+            if live_indicators is not None:
+                loaded["indicators"] += db_sink.write_indicators(live_indicators)
+                loaded["alphas"] += db_sink.write_alphas(live_alphas)
+
+        summary = runner.run_stream_pipeline(sink=load_flush)
+        summary["quote_ticks_loaded"] = loaded["quotes"]
+        summary["indicators_loaded"] = loaded["indicators"]
+        summary["alphas_loaded"] = loaded["alphas"]
         logger.info(
             "stream run complete: %s ticks, %s live feature rows",
             summary["ticks"],
