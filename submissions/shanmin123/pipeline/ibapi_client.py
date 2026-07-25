@@ -430,10 +430,28 @@ class IBApiClient(EWrapper, EClient):
     def tickSize(self, reqId, tickType, size):
         self._record_tick(reqId, self._TICK_SIZE_FIELDS.get(tickType), size)
 
+    #: Fields that carry a price: IB sends 0 or a negative as "no value yet".
+    _PRICE_FIELDS = frozenset({"last", "bid", "ask", "open", "close", "high", "low"})
+
     def _record_tick(self, request_id, field, value):
         symbol = self._stream_symbols.get(request_id)
-        if symbol is None or field is None or value in (None, -1):
+        if symbol is None or field is None or value is None:
             return
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return
+        # IB signals "unavailable" with sentinels rather than omitting the tick:
+        # -1 on any field, 0 or negative on a price, and a negative size/volume
+        # (observed: volume -36356795 outside market hours). Recording those
+        # produced impossible bars and, through them, nonsensical live alphas.
+        if numeric == -1:
+            return
+        if field in self._PRICE_FIELDS and numeric <= 0:
+            return
+        if field not in self._PRICE_FIELDS and numeric < 0:
+            return
+        value = numeric
         received = datetime.now(timezone.utc)
         row = {
             "tick_time_utc": received.isoformat(),

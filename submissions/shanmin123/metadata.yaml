@@ -51,12 +51,20 @@ storage_policy:
   final_dataset_location: >-
     Same OneDrive folder, FinStream-IBKR-data/final (Spark-readable partitioned
     parquet as documented in schema.md; local runtime path via paths.output_dir)
+  entity_identity: >-
+    The universe is symbol-keyed, not entity-keyed: a dated ticker-to-entity
+    (or conId) alias table is needed before joining this history to a
+    membership-aware panel. Fiserv is stored as FISV while the platform's
+    companies refresh uses FI, so a future platform-sourced run would split that
+    instrument. Recorded in VALIDATION_EVIDENCE.md.
   access_instructions: >-
     The link above is scoped to University of Edinburgh accounts with view access;
     open it signed in with a UoE account. For write access or a different scope,
     contact Shanmin Sun (s2812542@ed.ac.uk). Collection runs locally against an
     authorised IBKR paper login (no credentials in the repo); outputs are synced
     from the configured local paths into the OneDrive folder above.
+
+validation: "VALIDATION_EVIDENCE.md"
 
 notes: >-
   Integration note: unlike key-based cloud APIs, this source needs a logged-in

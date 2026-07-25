@@ -139,7 +139,19 @@ Airflow DAGs live in `pipeline/airflow/dags/`:
 * `ibkr_stream_dag.py` — the continuous streaming pipeline as a bounded task.
 
 Both are `schedule=None` pending lab bring-up, and point at
-`IBKR_PIPELINE_CONFIG` (default `/opt/airflow/config/ibkr.yaml`). psycopg2 is an
+`IBKR_PIPELINE_CONFIG` (default `/opt/airflow/config/ibkr.yaml`).
+
+Deploying into the shared Airflow: the DAG tasks import this `pipeline` package,
+so copying the two DAG files alone is not enough — the package has to be
+importable by the workers. Either mount this submission directory and add it to
+`PYTHONPATH`, or `pip install` it into the worker image, alongside its
+`requirements.txt`. The worker also needs network access to a logged-in IB
+Gateway at `ib.host`/`ib.port`; the Gateway login itself is interactive and is
+not automated here.
+
+Source precedence: `price_data`'s unique key excludes `source`, so this feed is
+a gap filler only if it runs after the primary EODHD load — see the cadence note
+in `ibkr_prices_dag.py`. psycopg2 is an
 optional dependency: without a database the pipeline still produces every
 parquet dataset.
 
@@ -203,6 +215,13 @@ On restart, prices request the missing daily window with a three-day overlap.
 News restarts from the last headline time with the configured minute overlap.
 Partition writes then deduplicate prices by `(symbol, event_date)` and news by
 `(symbol, provider_code, article_id)`.
+
+## Validation evidence
+
+Delivered dataset integrity, live-Gateway verification, measured latencies and the
+known data characteristics (zero-volume sessions, short histories, stale or
+recycled tickers, the `FISV`/`FI` rename) are recorded in
+[`VALIDATION_EVIDENCE.md`](VALIDATION_EVIDENCE.md).
 
 ## Testing
 

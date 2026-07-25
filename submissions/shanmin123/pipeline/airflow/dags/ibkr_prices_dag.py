@@ -29,8 +29,15 @@ IB_HOST/IB_PORT (the login itself is interactive and is not automated here).
 Pacing: the collector sleeps `run.symbol_delay_seconds` between symbols, so a
 full S&P-500 sweep stays under IBKR historical-data pacing limits.
 
-Cadence: daily bars settle at the US close, so this runs after it.
-`schedule=None` during validation; set to "0 23 * * 1-5" when enabled.
+Cadence and source precedence: `price_data`'s unique key excludes `source` and
+both feeds insert with DO NOTHING, so whichever writes a ticker/day first wins.
+This feed is documented as a GAP FILLER, which is only true if it runs AFTER the
+primary EODHD load (that DAG runs 04:00 Tue-Sat). Scheduling this at 23:00 the
+previous evening would invert that and make IBKR preempt EODHD. When enabled,
+set "0 6 * * 2-6" (after EODHD completes) rather than an evening slot, or agree
+an explicit precedence with the integration team.
+
+`schedule=None` during validation.
 """
 
 from __future__ import annotations

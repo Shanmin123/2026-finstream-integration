@@ -292,3 +292,21 @@ def test_intentional_disconnect_is_not_reported_as_a_failure(monkeypatch):
     monkeypatch.setattr(EClient, "disconnect", lambda _c: client.connectionClosed())
     client.disconnect()
     assert client.stream_error() is None
+
+
+def test_sentinel_ticks_are_rejected_not_recorded():
+    """IB signals "no value yet" with sentinels rather than omitting the tick.
+    Recording them produced impossible bars (volume -36356795, open 0.0) and
+    through them nonsensical live alphas."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    client._stream_symbols = {1: "AAPL"}
+    client._stream_rows = []
+    client.tickPrice(1, 4, 250.0, None)       # good last
+    client.tickPrice(1, 14, 0.0, None)        # open sentinel (0)
+    client.tickPrice(1, 1, -3.0, None)        # negative price
+    client.tickSize(1, 8, -36356795)          # negative volume
+    client.tickSize(1, 8, 1_000_000)          # good volume
+    assert [(r["field"], r["value"]) for r in client._stream_rows] == [
+        ("last", 250.0),
+        ("volume", 1000000.0),
+    ]

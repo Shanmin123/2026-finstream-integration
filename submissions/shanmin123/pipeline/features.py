@@ -204,13 +204,16 @@ def compute_alphas(prices, computed_at_utc):
         )
 
         # alpha_53: -1 * delta(((close-low)-(high-close))/(close-low), 9)
-        inner = ((close - low) - (high - close)) / (close - low)
+        # close == low (a session that closed on its low) makes the denominator
+        # zero; the ratio is undefined there, not infinite.
+        close_low = (close - low).replace(0.0, np.nan)
+        inner = ((close - low) - (high - close)) / close_low
         out["alpha_53"] = -1.0 * _delta(inner, 9)
 
         # alpha_54: (-1*((low-close)*open^5)) / ((low-high)*close^5)
-        out["alpha_54"] = (-1.0 * (low - close) * open_.pow(5)) / (
-            (low - high) * close.pow(5)
-        )
+        # low == high (a zero-range session) is the same degenerate case.
+        denom_54 = ((low - high) * close.pow(5)).replace(0.0, np.nan)
+        out["alpha_54"] = (-1.0 * (low - close) * open_.pow(5)) / denom_54
 
         # alpha_101: (close-open) / ((high-low) + .001)
         out["alpha_101"] = (close - open_) / ((high - low) + 0.001)
@@ -232,6 +235,11 @@ def compute_alphas(prices, computed_at_utc):
     rank_l = result.groupby("event_date")["_a20_l"].rank(pct=True)
     result["alpha_20"] = (-1.0 * rank_h) * rank_c * rank_l
     result = result.drop(columns=["_a20_h", "_a20_c", "_a20_l"])
+    # A factor is either a number or unknown: an infinity would propagate into
+    # downstream models and into the database, where NaN is filtered but inf is
+    # not. Any residual non-finite value becomes NaN here.
+    value_columns = [c for c in ALPHA_COLUMNS if c.startswith("alpha_")]
+    result[value_columns] = result[value_columns].replace([np.inf, -np.inf], np.nan)
     return result.loc[:, list(ALPHA_COLUMNS)]
 
 

@@ -25,6 +25,7 @@ indicators or alpha formulas need no migration.
 """
 
 import logging
+import math
 import os
 from datetime import datetime, timezone
 
@@ -223,7 +224,9 @@ def derived_frame_to_platform(frame, interval=DAILY_INTERVAL):
         computed_at = record.get(stamp_column)
         for name in value_columns:
             value = record.get(name)
-            if value is None or value != value:      # skip NaN warm-up cells
+            # Skip NaN warm-up cells AND infinities: PostgreSQL double precision
+            # accepts Infinity, so an unguarded value would land in the table.
+            if value is None or not math.isfinite(float(value)):
                 continue
             mapped.append(
                 (

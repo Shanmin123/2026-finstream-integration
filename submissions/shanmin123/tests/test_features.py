@@ -329,3 +329,27 @@ def test_wilder_resumes_from_the_pre_gap_average_not_a_fresh_seed():
     assert pd.isna(out.iloc[14])
     # Resuming from the carried average gives (10*13 + 0)/14; a fresh seed would not.
     assert out.iloc[15] == pytest.approx(seeded * 13 / 14)
+
+
+def test_degenerate_sessions_give_undefined_alphas_not_infinities():
+    """close == low (closed on the low) and low == high (zero range) make the
+    alpha_53/alpha_54 denominators zero. An infinity would propagate into the
+    models and into PostgreSQL, which accepts Infinity in a double column."""
+    frame = _prices(n=40)
+    frame.loc[20, "low"] = frame.loc[20, "close"]       # closed on its low
+    frame.loc[25, ["low", "high"]] = frame.loc[25, "close"]  # zero-range session
+    alphas = compute_alphas(frame, COMPUTED_AT)
+    values = alphas[[c for c in alphas.columns if c.startswith("alpha_")]]
+    assert not np.isinf(values.to_numpy(dtype="float64")).any()
+
+
+def test_db_mapping_drops_infinities_as_well_as_nans():
+    from pipeline.db_sink import derived_frame_to_platform
+
+    frame = pd.DataFrame(
+        [{"symbol": "AAPL", "event_date": "2026-07-24", "alpha_53": np.inf,
+          "alpha_54": -np.inf, "alpha_101": 0.5,
+          "computed_at_utc": "2026-07-25T00:00:00+00:00"}]
+    )
+    mapped = derived_frame_to_platform(frame)
+    assert [row[3] for row in mapped] == ["alpha_101"]
