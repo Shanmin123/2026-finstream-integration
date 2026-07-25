@@ -115,7 +115,9 @@ class IBApiClient(EWrapper, EClient):
     def resolve_stock_contract(self, symbol):
         request_id = self._new_request()
         contract = Contract()
-        contract.symbol = symbol.replace(".", " ")
+        # IB writes share classes with a space ("BRK B"); data vendors use
+        # "BRK.B" or "BRK-B". Map both separators.
+        contract.symbol = symbol.replace(".", " ").replace("-", " ")
         contract.secType = "STK"
         contract.exchange = "SMART"
         contract.currency = "USD"
