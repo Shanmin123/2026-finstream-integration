@@ -128,3 +128,19 @@ formulas are recomputed. Values converge to the final daily rows once the real
 bar is collected. Partition path mirrors the daily datasets
 (`indicators_live/event_year=YYYY/symbol=SYMBOL/part-000.parquet`); dedup key
 `(symbol, event_date)` keeps the newest refresh.
+
+## Platform PostgreSQL tables
+
+DDL: `pipeline/db/init_postgres/ibkr_tables.sql`. All rows carry `source='ibkr'`.
+
+| Table | Key | Conflict policy |
+| --- | --- | --- |
+| `price_data` (platform's own) | `(ticker, timestamp_ms, interval)` | DO NOTHING |
+| `quote_ticks` | `(ticker, timestamp_ms, field, source)` | DO NOTHING (immutable observations); `market_data_type` records 1 = real time, 3 = delayed |
+| `technical_indicators` | `(ticker, timestamp_ms, indicator_name, interval, source)` | DO UPDATE when `computed_at_utc` is newer |
+| `alpha_factors` | `(ticker, timestamp_ms, alpha_id, interval, source)` | DO UPDATE when `computed_at_utc` is newer |
+
+The derived tables are long `(name, value)` rather than one column per
+indicator, matching this project's existing collectors: adding an indicator or
+an alpha formula needs no migration. `is_provisional` marks an intraday value
+computed from a streamed price; the end-of-day run overwrites it in place.

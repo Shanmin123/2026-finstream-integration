@@ -39,10 +39,13 @@ storage_policy:
     Same OneDrive folder, FinStream-IBKR-data/intermediate (local runtime path is
     configured via paths.intermediate_data_dir in config.yaml)
   platform_database: >-
-    Daily bars are upserted into the platform PostgreSQL table price_data
-    (source='ibkr', conflict key ticker/timestamp_ms/interval) by
-    pipeline/airflow/dags/ibkr_prices_dag.py. Quotes and derived
-    indicator/alpha datasets await a platform schema decision.
+    PostgreSQL, source='ibkr'. Daily bars upsert into the platform's existing
+    price_data (conflict key ticker/timestamp_ms/interval). Streamed ticks go to
+    quote_ticks and the derived datasets to technical_indicators / alpha_factors,
+    created by pipeline/db/init_postgres/ibkr_tables.sql; the derived tables use
+    the long (name, value) layout and keep the newer computation, so provisional
+    intraday rows are replaced in place by end-of-day values. Written by the two
+    DAGs in pipeline/airflow/dags/.
   final_dataset_location: >-
     Same OneDrive folder, FinStream-IBKR-data/final (Spark-readable partitioned
     parquet as documented in schema.md; local runtime path via paths.output_dir)

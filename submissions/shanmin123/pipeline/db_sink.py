@@ -10,9 +10,11 @@ psycopg2 is an optional dependency: the parquet datasets remain the primary
 output and the pipeline runs without a database. Connection settings come from
 the platform's environment variables (POSTGRES_HOST/PORT/USER/PASSWORD/DB).
 
-Only daily bars have an agreed platform table. Tables for streamed quotes and
-for the derived indicator/alpha datasets are still open with the integration
-team, so those datasets stay in parquet until a schema is confirmed.
+Daily bars go to the platform's own price_data table. Streamed quotes and the
+derived indicator/alpha datasets get three tables defined in
+db/init_postgres/ibkr_tables.sql, which follow the same column naming and use
+the long (name, value) layout this project's collectors already use, so new
+indicators or alpha formulas need no migration.
 """
 
 import logging
@@ -138,3 +140,143 @@ def get_active_tickers(connection_factory=get_connection):
             return [row[0] for row in cur.fetchall()]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Streamed quotes and the derived long-format datasets (see
+# db/init_postgres/ibkr_tables.sql for the DDL these match).
+# ---------------------------------------------------------------------------
+
+_NON_VALUE_COLUMNS = {
+    "symbol", "event_date", "computed_at_utc", "as_of_utc", "provisional",
+}
+
+
+def _epoch_ms_from_iso(value):
+    text = str(value).replace("Z", "+00:00")
+    moment = datetime.fromisoformat(text)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    moment = moment.astimezone(timezone.utc)
+    return int(moment.timestamp() * 1000), moment.isoformat()
+
+
+def quote_rows_to_platform(rows, market_data_type=3):
+    mapped = []
+    for row in rows:
+        timestamp_ms, datetime_utc = _epoch_ms_from_iso(row["tick_time_utc"])
+        mapped.append(
+            (
+                row["symbol"],
+                timestamp_ms,
+                datetime_utc,
+                row["field"],
+                row.get("value"),
+                market_data_type,
+                SOURCE,
+            )
+        )
+    return mapped
+
+
+def derived_frame_to_platform(frame, interval=DAILY_INTERVAL):
+    """Melt a wide indicator/alpha frame into the platform's long rows."""
+    if frame is None or frame.empty:
+        return []
+    provisional = bool(frame["provisional"].iloc[0]) if "provisional" in frame else False
+    stamp_column = "as_of_utc" if "as_of_utc" in frame else "computed_at_utc"
+    value_columns = [c for c in frame.columns if c not in _NON_VALUE_COLUMNS]
+    mapped = []
+    for record in frame.to_dict("records"):
+        timestamp_ms, datetime_utc = _epoch_ms(record["event_date"])
+        computed_at = record.get(stamp_column)
+        for name in value_columns:
+            value = record.get(name)
+            if value is None or value != value:      # skip NaN warm-up cells
+                continue
+            mapped.append(
+                (
+                    record["symbol"],
+                    timestamp_ms,
+                    datetime_utc,
+                    name,
+                    float(value),
+                    interval,
+                    provisional,
+                    computed_at,
+                    SOURCE,
+                )
+            )
+    return mapped
+
+
+def _execute(sql, mapped, connection_factory):
+    if not mapped:
+        return 0
+    from psycopg2.extras import execute_values
+
+    conn = connection_factory()
+    try:
+        with conn.cursor() as cur:
+            execute_values(cur, sql, mapped)
+        conn.commit()
+    finally:
+        conn.close()
+    return len(mapped)
+
+
+def write_quotes(rows, market_data_type=3, connection_factory=get_connection):
+    """Insert streamed ticks. Ticks are immutable observations, so conflicts are
+    ignored exactly as the platform does for price_data."""
+    sent = _execute(
+        """
+        INSERT INTO quote_ticks
+            (ticker, timestamp_ms, datetime_utc, field, value,
+             market_data_type, source)
+        VALUES %s
+        ON CONFLICT (ticker, timestamp_ms, field, source) DO NOTHING
+        """,
+        quote_rows_to_platform(rows, market_data_type),
+        connection_factory,
+    )
+    if sent:
+        logger.info(
+            "db_write_complete",
+            extra={"dataset": "quote_ticks", "symbol": "*", "rows": sent},
+        )
+    return sent
+
+
+def _write_derived(table, key_column, frame, interval, connection_factory):
+    sql = """
+        INSERT INTO {table}
+            (ticker, timestamp_ms, datetime_utc, {key}, value, interval,
+             is_provisional, computed_at_utc, source)
+        VALUES %s
+        ON CONFLICT (ticker, timestamp_ms, {key}, interval, source)
+        DO UPDATE SET
+            value = EXCLUDED.value,
+            is_provisional = EXCLUDED.is_provisional,
+            computed_at_utc = EXCLUDED.computed_at_utc
+        WHERE EXCLUDED.computed_at_utc >= {table}.computed_at_utc
+    """.format(table=table, key=key_column)
+    sent = _execute(sql, derived_frame_to_platform(frame, interval), connection_factory)
+    if sent:
+        logger.info(
+            "db_write_complete", extra={"dataset": table, "symbol": "*", "rows": sent}
+        )
+    return sent
+
+
+def write_indicators(frame, interval=DAILY_INTERVAL, connection_factory=get_connection):
+    """Upsert indicator values. Newer computations win, so a provisional
+    intraday row is replaced by the final end-of-day value in place."""
+    return _write_derived(
+        "technical_indicators", "indicator_name", frame, interval, connection_factory
+    )
+
+
+def write_alphas(frame, interval=DAILY_INTERVAL, connection_factory=get_connection):
+    return _write_derived(
+        "alpha_factors", "alpha_id", frame, interval, connection_factory
+    )

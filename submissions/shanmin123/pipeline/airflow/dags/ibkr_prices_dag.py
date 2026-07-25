@@ -6,9 +6,10 @@ derives the technical-indicator and Alpha101-subset datasets, and upserts the
 bars into the platform's PostgreSQL `price_data` table with source='ibkr'.
 
 Data flow:
-  IB Gateway (TWS API socket) -> collect-prices -> parquet layers
-                              -> compute-features -> indicator/alpha parquet
-                              -> price_data (PostgreSQL, source='ibkr')
+  IB Gateway (TWS API socket) -> collect-prices    -> parquet layers
+                              -> compute-features  -> indicator/alpha parquet
+                              -> price_data, technical_indicators, alpha_factors
+                                 (PostgreSQL, source='ibkr')
 
 Universe: pulled from the platform (`companies.is_active`) so the DAG does not
 hardcode a list; falls back to the configured symbols file when the database is
@@ -85,6 +86,23 @@ def ibkr_prices():
         return runner.run_features()
 
     @task
+    def load_features_to_postgres(_features: dict) -> dict:
+        """Upsert the derived indicator/alpha datasets into the platform tables."""
+        from pipeline import db_sink
+
+        _config, runner = _build_runner()
+        prices = runner.storage.read_final_prices()
+        if prices.empty:
+            return {"indicators": 0, "alphas": 0}
+        from pipeline.features import compute_alphas, compute_indicators
+
+        stamp = datetime.utcnow().replace(tzinfo=None).isoformat() + "+00:00"
+        return {
+            "indicators": db_sink.write_indicators(compute_indicators(prices, stamp)),
+            "alphas": db_sink.write_alphas(compute_alphas(prices, stamp)),
+        }
+
+    @task
     def load_price_data_to_postgres(_features: dict) -> int:
         """Upsert the freshly collected bars into the platform price_data table."""
         from pipeline import db_sink
@@ -98,7 +116,8 @@ def ibkr_prices():
         rows = (recent if not recent.empty else prices.tail(1000)).to_dict("records")
         return db_sink.write_prices(rows)
 
-    load_price_data_to_postgres(compute_features(collect_prices()))
+    features = compute_features(collect_prices())
+    load_features_to_postgres(load_price_data_to_postgres(features))
 
 
 ibkr_prices()

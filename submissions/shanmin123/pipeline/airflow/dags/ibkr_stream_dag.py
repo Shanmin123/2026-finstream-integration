@@ -7,8 +7,10 @@ appends the ticks to the quotes dataset and recomputes the provisional intraday
 indicator/alpha rows for the symbols that moved.
 
 Data flow:
-  IB Gateway (reqMktData tick stream) -> quotes parquet
-                                      -> indicators_live / alphas_live parquet
+  IB Gateway (reqMktData tick stream) -> quotes parquet     -> quote_ticks
+                                      -> live features parquet
+                                         -> technical_indicators / alpha_factors
+                                            (is_provisional = TRUE)
 
 Latency: the free paper tier streams delayed data (15-20 minutes behind). With
 market-data subscriptions the same task streams real time by setting
@@ -18,10 +20,11 @@ The task is bounded by `stream.duration_seconds` so Airflow keeps a normal
 task lifecycle; schedule it back-to-back across the session for continuous
 coverage (e.g. "*/30 13-20 * * 1-5" with duration_seconds 1800).
 
-Streamed quotes and the provisional live features have no agreed platform table
-yet, so this DAG writes the parquet datasets only. The PostgreSQL sink is wired
-for daily bars in `ibkr_prices_dag`; extending it needs a schema decision from
-the integration team.
+Ticks land in the platform's quote_ticks table (immutable observations, so
+conflicts are ignored) and the provisional intraday values in
+technical_indicators / alpha_factors with is_provisional = TRUE; the end-of-day
+run in `ibkr_prices_dag` overwrites them in place because those tables upsert
+the newer computation.
 
 `schedule=None` during validation.
 """
@@ -57,6 +60,12 @@ def ibkr_stream():
         config = load_config(CONFIG_PATH)
         runner = build_runner(config)
         summary = runner.run_stream_pipeline()
+        from pipeline import db_sink
+
+        quotes = runner.storage.read_latest_quote_rows()
+        summary["quote_ticks_loaded"] = db_sink.write_quotes(
+            quotes, market_data_type=config.stream.market_data_type
+        )
         logger.info(
             "stream run complete: %s ticks, %s live feature rows",
             summary["ticks"],

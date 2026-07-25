@@ -143,9 +143,13 @@ Both are `schedule=None` pending lab bring-up, and point at
 optional dependency: without a database the pipeline still produces every
 parquet dataset.
 
-Open with the integration team: streamed quotes and the derived
-indicator/alpha datasets have no platform table yet, so they remain parquet
-until a schema is agreed.
+Platform tables are created by `pipeline/db/init_postgres/ibkr_tables.sql`:
+`quote_ticks` (immutable ticks, conflicts ignored as with `price_data`),
+`technical_indicators` and `alpha_factors` (long `(name, value)` layout, so new
+indicators or alpha formulas need no migration; the upsert keeps the newer
+computation, which is what lets an intraday `is_provisional = TRUE` row be
+replaced in place by the end-of-day value). Daily bars go to the platform's
+existing `price_data` with `source='ibkr'`.
 
 ## Universe note
 
