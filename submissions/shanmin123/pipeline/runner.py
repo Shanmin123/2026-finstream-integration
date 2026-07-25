@@ -196,6 +196,43 @@ class PipelineRunner:
                     raise
         return summary
 
+    def run_features(self):
+        """Compute technical indicators and the Alpha101 subset (offline).
+
+        Reads the pipeline's own final prices dataset; no Gateway connection.
+        Recomputable by design, so there is no checkpoint: the partition merge
+        keeps (symbol, event_date) unique.
+        """
+        from pipeline.features import compute_alphas, compute_indicators
+
+        prices = self.storage.read_final_prices()
+        if prices.empty:
+            raise RuntimeError(
+                "No final prices found. Run collect-prices before compute-features."
+            )
+        computed_at = self._utc_now().isoformat()
+        summary = {}
+        for dataset, frame in (
+            ("indicators", compute_indicators(prices, computed_at)),
+            ("alphas", compute_alphas(prices, computed_at)),
+        ):
+            result = self.storage.write_derived(
+                dataset,
+                frame,
+                ("symbol", "event_date"),
+                "computed_at_utc",
+            )
+            summary[dataset] = {
+                "input_price_rows": len(prices),
+                "rows": result.final_rows,
+                "partitions": len(result.final_paths),
+            }
+            self.logger.info(
+                "dataset_write_complete",
+                extra={"dataset": dataset, "symbol": "*", "rows": result.final_rows},
+            )
+        return summary
+
     def _with_retries(self, operation, symbol, callback):
         last_error = None
         attempts = self.config.run.max_retries + 1

@@ -2,11 +2,15 @@
 
 ## Features
 
-This pipeline collects two IBKR datasets:
+This pipeline collects two IBKR datasets and derives two feature datasets:
 
 - Daily stock OHLCV bars from `reqHistoricalData`
 - Historical news headlines and provider metadata from `reqHistoricalNews` and
   `reqNewsProviders`
+- Technical indicators (SMA/EMA, MACD, RSI, Bollinger, ATR, OBV) computed
+  offline from the collected prices
+- An Alpha101 subset (8 documented formulas, pandas-only) computed offline from
+  the collected prices
 
 It resolves stock contracts through IBKR, stores raw request/response records,
 normalises and deduplicates the data, writes partitioned Parquet outputs, and
@@ -87,11 +91,13 @@ python -m pipeline.main --config config.yaml smoke-test
 python -m pipeline.main --config config.yaml collect-prices
 python -m pipeline.main --config config.yaml collect-news
 python -m pipeline.main --config config.yaml run-all
+python -m pipeline.main --config config.yaml compute-features
 ```
 
 `smoke-test` performs read-only AAPL-style price and news checks without writing
 data or advancing checkpoints. `run-all` opens one Gateway connection and runs
-both production collectors.
+both production collectors. `compute-features` needs no Gateway: it reads the
+final prices dataset and writes the indicators and alphas datasets.
 
 ## Output
 

@@ -52,3 +52,51 @@ Final partition path:
 `news/event_date=YYYY-MM-DD/symbol=SYMBOL/part-000.parquet`.
 
 Article body text is not part of this schema.
+
+## Final Indicators Parquet
+
+Derived offline from the final prices dataset (`compute-features`).
+Deduplication key: `(symbol, event_date)`.
+
+| Column | Spark type | Description |
+| --- | --- | --- |
+| `symbol` | string | Stock symbol |
+| `event_date` | string | Trading-session date in `YYYY-MM-DD` format |
+| `sma_20`, `sma_50` | double | Simple moving averages of close |
+| `ema_12`, `ema_26` | double | Exponential moving averages of close |
+| `macd`, `macd_signal`, `macd_hist` | double | MACD(12,26,9) line, signal, histogram |
+| `rsi_14` | double | Wilder RSI over 14 sessions |
+| `bb_mid_20`, `bb_upper_20`, `bb_lower_20` | double | Bollinger Bands (20, 2 std) |
+| `atr_14` | double | Wilder Average True Range over 14 sessions |
+| `obv` | double | On-Balance Volume (cumulative) |
+| `computed_at_utc` | string | ISO 8601 UTC computation timestamp |
+
+Final partition path:
+`indicators/event_year=YYYY/symbol=SYMBOL/part-000.parquet`.
+
+## Final Alphas Parquet
+
+Alpha101 subset (Kakushadze 2015), pandas-only, computed offline from final
+prices; formulas are documented inline in `pipeline/features.py`.
+Deduplication key: `(symbol, event_date)`.
+
+| Column | Spark type | Description |
+| --- | --- | --- |
+| `symbol` | string | Stock symbol |
+| `event_date` | string | Trading-session date in `YYYY-MM-DD` format |
+| `alpha_6` | double | `-corr(open, volume, 10)` |
+| `alpha_9` | double | Signed close-delta with 5-day trend filter |
+| `alpha_12` | double | `sign(delta(volume,1)) * -delta(close,1)` |
+| `alpha_20` | double | Cross-sectional rank alpha; ranks span the symbols present that date (single-symbol runs degenerate to the constant -1) |
+| `alpha_23` | double | Conditional high-delta vs 20-day mean high |
+| `alpha_53` | double | `-delta(((close-low)-(high-close))/(close-low), 9)` |
+| `alpha_54` | double | `-((low-close)*open^5) / ((low-high)*close^5)` |
+| `alpha_101` | double | `(close-open) / ((high-low)+.001)` |
+| `computed_at_utc` | string | ISO 8601 UTC computation timestamp |
+
+Final partition path:
+`alphas/event_year=YYYY/symbol=SYMBOL/part-000.parquet`.
+
+The full 101-alpha set (external `alpha101` package, Python 3.13 environment)
+and Qlib Alpha158 remain in the research repository; this submission ships the
+production-contract-compatible subset.

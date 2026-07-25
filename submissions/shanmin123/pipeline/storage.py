@@ -188,6 +188,52 @@ class LayeredStorage:
             final_paths=final_paths,
         )
 
+    def read_final_prices(self):
+        """Load every final prices partition into one frame (empty when none)."""
+        root = self.final_dir / "prices"
+        paths = sorted(root.glob("event_year=*/symbol=*/part-000.parquet"))
+        frames = [pd.read_parquet(path) for path in paths]
+        if not frames:
+            return pd.DataFrame()
+        merged = pd.concat(frames, ignore_index=True)
+        return merged.sort_values(["symbol", "event_date"]).reset_index(drop=True)
+
+    def write_derived(self, dataset, frame, key_columns, order_column):
+        """Write a derived (recomputable) dataset to the final layer only.
+
+        Same event_year/symbol partitioning and dedup-merge as prices; no raw
+        layer because the inputs are already persisted pipeline outputs.
+        """
+        final_paths = []
+        final_rows = 0
+        if frame is not None and not frame.empty:
+            for symbol, symbol_frame in frame.groupby("symbol", sort=True):
+                for year, year_frame in symbol_frame.groupby(
+                    symbol_frame["event_date"].str[:4], sort=True
+                ):
+                    final_path = (
+                        self.final_dir
+                        / dataset
+                        / ("event_year=" + str(year))
+                        / ("symbol=" + _safe_component(symbol))
+                        / "part-000.parquet"
+                    )
+                    merged = _merge_partition(
+                        final_path,
+                        year_frame,
+                        key_columns,
+                        order_column,
+                    )
+                    final_paths.append(final_path)
+                    final_rows += len(merged)
+        return WriteResult(
+            input_rows=0 if frame is None else len(frame),
+            final_rows=final_rows,
+            raw_path=None,
+            intermediate_paths=[],
+            final_paths=final_paths,
+        )
+
     def write_news(self, rows, request, retrieved_at_utc, run_id):
         raw_path = self._write_raw("news", rows, request, retrieved_at_utc, run_id)
         frame = self._normalize_news(rows, retrieved_at_utc)

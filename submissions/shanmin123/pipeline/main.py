@@ -25,6 +25,10 @@ def build_parser():
     subparsers.add_parser("collect-prices", help="Collect daily OHLCV.")
     subparsers.add_parser("collect-news", help="Collect news headlines.")
     subparsers.add_parser("run-all", help="Collect prices and news.")
+    subparsers.add_parser(
+        "compute-features",
+        help="Compute technical indicators and the Alpha101 subset from final prices.",
+    )
     return parser
 
 
@@ -57,6 +61,7 @@ def main(argv=None):
         "collect-prices": runner.run_prices,
         "collect-news": runner.run_news,
         "run-all": runner.run_all,
+        "compute-features": runner.run_features,
     }
     try:
         result = commands[args.command]()
