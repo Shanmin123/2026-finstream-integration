@@ -105,6 +105,15 @@ data or advancing checkpoints. `run-all` opens one Gateway connection and runs
 both production collectors. `compute-features` needs no Gateway: it reads the
 final prices dataset and writes the indicators and alphas datasets.
 
+## Universe note
+
+`symbols.sp500.csv` is a point-in-time snapshot (S&P 500 membership 2000-2025,
+symbols still trading at 2025-12-31). As of 2026-07, 15 of the 673 names have
+left the US market (delisted, acquired, or renamed) and have no US IB contract:
+AL, ATGE, BK, CMA, CTRA, DAY, HI, HOLX, IAC, MMC, PCH, PX, SEE, SNV, TGNA.
+The collector reports IB error 200 for them and continues; the live datasets
+cover the remaining 658 names. Refresh the list to change the universe.
+
 ## Output
 
 The configured directories contain:
