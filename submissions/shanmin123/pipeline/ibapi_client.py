@@ -113,6 +113,20 @@ class IBApiClient(EWrapper, EClient):
                 self._connected_event.set()
 
     def resolve_stock_contract(self, symbol):
+        # SMART/USD alone is ambiguous for some tickers (IB error 200), in which
+        # case the resolution is retried pinned to each major primary exchange.
+        attempts = (None, "NYSE", "NASDAQ", "ARCA", "AMEX")
+        last_error = None
+        for primary in attempts:
+            try:
+                return self._resolve_stock_contract_once(symbol, primary)
+            except (IBRequestError, LookupError) as exc:
+                last_error = exc
+                if isinstance(exc, IBRequestError) and exc.error_code != 200:
+                    raise
+        raise last_error
+
+    def _resolve_stock_contract_once(self, symbol, primary_exchange):
         request_id = self._new_request()
         contract = Contract()
         # IB writes share classes with a space ("BRK B"); data vendors use
@@ -121,6 +135,8 @@ class IBApiClient(EWrapper, EClient):
         contract.secType = "STK"
         contract.exchange = "SMART"
         contract.currency = "USD"
+        if primary_exchange:
+            contract.primaryExchange = primary_exchange
 
         self._contract_details[request_id] = []
         try:
