@@ -44,6 +44,7 @@ class NewsConfig:
     lookback_days: int
     overlap_minutes: int
     limit: int
+    max_pages: int
 
 
 @dataclass(frozen=True)
@@ -282,6 +283,10 @@ def load_config(path):
         lookback_days=_positive_int(news_data.get("lookback_days", 1), "lookback_days"),
         overlap_minutes=max(int(news_data.get("overlap_minutes", 5)), 0),
         limit=_positive_int(news_data.get("limit", 100), "news.limit"),
+        # The per-run page budget for the backwards walk. When a backlog
+        # exceeds limit*max_pages the run reports the gap and holds its
+        # checkpoint; raising this is the operator's lever to cover it.
+        max_pages=_positive_int(news_data.get("max_pages", 5), "news.max_pages"),
     )
     run = RunConfig(
         max_retries=_positive_int(run_data.get("max_retries", 3), "max_retries"),

@@ -31,6 +31,9 @@ news:
   lookback_days: 2
   overlap_minutes: 5
   limit: 100
+  # Backwards-pagination page budget per run; a backlog beyond
+  # limit*max_pages is reported and needs this raised to cover it.
+  max_pages: 5
 
 stream:
   # Streaming quotes via reqMktData. market_data_type 3 = delayed (free paper

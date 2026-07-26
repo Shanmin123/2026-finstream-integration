@@ -161,6 +161,12 @@ class IBApiClient(EWrapper, EClient):
                 self._errors.setdefault(request_id, error)
         for _request_id, event in pending:
             event.set()
+        # A providers request waits on its own event; without this it would
+        # sit out its full timeout for a response that can never arrive.
+        if not self._providers_event.is_set():
+            if self._providers_error is None:
+                self._providers_error = error
+            self._providers_event.set()
 
     def error(self, reqId, errorCode, errorString, *args):
         if 2100 <= errorCode <= 2199:
@@ -441,7 +447,15 @@ class IBApiClient(EWrapper, EClient):
         with self._id_lock:
             request_id = self._next_id
             self._next_id += 1
-        self._events[request_id] = threading.Event()
+            event = threading.Event()
+            self._events[request_id] = event
+            # Registered under the same lock _fail_all_pending sweeps with,
+            # and seeded when the connection is ALREADY dead: a request born
+            # in either gap would otherwise wait out its full timeout for a
+            # response that can never arrive.
+            if self._connection_error is not None:
+                self._errors[request_id] = self._connection_error
+                event.set()
         return request_id
 
     def _finish_request(self, request_id):
@@ -504,8 +518,15 @@ class IBApiClient(EWrapper, EClient):
                 self.reqMktData(request_id, contract, "", False, False, [])
             except BaseException:
                 # A half-built subscription set must not leak: the server
-                # would keep streaming into requests nobody will drain.
-                self.stop_quote_stream()
+                # would keep streaming into requests nobody will drain. The
+                # ORIGINAL failure stays primary even if the cleanup's own
+                # cancel also fails.
+                try:
+                    self.stop_quote_stream()
+                except BaseException:
+                    logging.getLogger("ibkr_pipeline").warning(
+                        "subscription_cleanup_failed", exc_info=True
+                    )
                 raise
         return list(self._stream_request_ids)
 
@@ -536,8 +557,15 @@ class IBApiClient(EWrapper, EClient):
 
     def stop_quote_stream(self):
         request_ids = list(getattr(self, "_stream_request_ids", []))
+        # A cancel raising must not abandon the remaining cancels or the local
+        # cleanup below; the first failure resurfaces once cleanup is done.
+        cancel_error = None
         for request_id in request_ids:
-            self.cancelMktData(request_id)
+            try:
+                self.cancelMktData(request_id)
+            except BaseException as exc:
+                if cancel_error is None:
+                    cancel_error = exc
         # One locked pass over the subscriptions (socket writes above stay
         # outside the lock): after this, a tick still being decoded finds no
         # symbol and is dropped inside _record_tick's own locked section, so
@@ -556,6 +584,8 @@ class IBApiClient(EWrapper, EClient):
         for request_id in request_ids:
             self._clean_request(request_id)
         self._stream_request_ids = []
+        if cancel_error is not None:
+            raise cancel_error
 
     def stream_quotes(self, symbols, duration_seconds, market_data_type=3):
         """Collect ticks for a fixed window (batch wrapper over the stream primitives).

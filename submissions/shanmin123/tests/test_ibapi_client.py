@@ -612,3 +612,46 @@ def test_rejection_during_the_cancel_itself_is_latched(monkeypatch):
     client.stop_quote_stream()
     error = client.stream_error()
     assert error is not None and error.error_code == 354
+
+
+def test_connection_loss_also_wakes_a_pending_providers_request(monkeypatch):
+    import time as _time
+
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=5)
+    monkeypatch.setattr(
+        client, "reqNewsProviders", lambda: client.connectionClosed()
+    )
+    started = _time.time()
+    with pytest.raises(IBRequestError, match="1100"):
+        client.list_news_providers()
+    assert _time.time() - started < 2
+
+
+def test_request_born_on_a_dead_connection_fails_immediately():
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=5)
+    client._connection_error = IBRequestError(-1, 1100, "already dead")
+    request_id = client._new_request()
+    assert client._events[request_id].is_set()
+    with pytest.raises(IBRequestError, match="1100"):
+        client._wait_for_request(request_id, "anything")
+    client._clean_request(request_id)
+
+
+def test_cancel_failure_does_not_abandon_the_remaining_cleanup(monkeypatch):
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+    client.start_quote_stream(["AAPL", "MSFT"])
+    attempted = []
+
+    def failing_cancel(request_id):
+        attempted.append(request_id)
+        if len(attempted) == 1:
+            raise OSError("socket write failed")
+
+    monkeypatch.setattr(client, "cancelMktData", failing_cancel)
+    with pytest.raises(OSError, match="socket write failed"):
+        client.stop_quote_stream()
+    assert len(attempted) == 2, "the second cancel must still be attempted"
+    assert client._stream_request_ids == [] and client._stream_symbols == {}

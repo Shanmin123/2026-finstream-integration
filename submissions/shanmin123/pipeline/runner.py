@@ -186,6 +186,7 @@ class PipelineRunner:
                 "end": anchor,
                 "limit": self.config.news.limit,
                 "since_utc": seen_after.isoformat(),
+                "max_pages": self.config.news.max_pages,
             }
             try:
                 rows, feed_exhausted = self._with_retries(
@@ -199,6 +200,7 @@ class PipelineRunner:
                             request["end"],
                             request["limit"],
                             since_utc=request["since_utc"],
+                            max_pages=request["max_pages"],
                         )
                     ),
                 )
@@ -210,16 +212,6 @@ class PipelineRunner:
                     self._run_id("news", symbol, retrieved_at),
                 )
                 if rows:
-                    if feed_exhausted:
-                        last_time = max(row["published_at_utc"] for row in rows)
-                    else:
-                        # The walk hit its page budget with IB still flagging
-                        # older unread headlines. Advancing to the newest
-                        # would skip that remainder forever; re-anchoring at
-                        # the oldest collected makes the next run walk down
-                        # to it again and keep digging (the article dedup
-                        # absorbs the overlap).
-                        last_time = min(row["published_at_utc"] for row in rows)
                     fresh = sum(
                         1
                         for row in rows
@@ -229,10 +221,29 @@ class PipelineRunner:
                         "news_fetched",
                         extra={"dataset": "news", "symbol": symbol, "rows": fresh},
                     )
-                    self.checkpoint.update_news(symbol, last_time)
-                    state.setdefault("news", {})[symbol] = {
-                        "last_published_at_utc": last_time
-                    }
+                    if feed_exhausted:
+                        last_time = max(row["published_at_utc"] for row in rows)
+                        self.checkpoint.update_news(symbol, last_time)
+                        state.setdefault("news", {})[symbol] = {
+                            "last_published_at_utc": last_time
+                        }
+                    else:
+                        # The page budget ran out with IB still flagging older
+                        # unread headlines. Every anchor starts at "now", so
+                        # no checkpoint value can make the next default run
+                        # reach deeper -- advancing would skip the remainder
+                        # forever, and pretending progress downward would
+                        # livelock. The checkpoint therefore stays put, the
+                        # gap is reported, and the operator raises
+                        # news.max_pages (or limit) to cover it.
+                        self.logger.warning(
+                            "news_backlog_exceeds_page_budget",
+                            extra={
+                                "dataset": "news",
+                                "symbol": symbol,
+                                "rows": len(rows),
+                            },
+                        )
                 summary["written"] += len(rows)
                 self.logger.info(
                     "dataset_write_complete",

@@ -198,3 +198,15 @@ run: {max_retries: 1, retry_delay_seconds: 0, continue_on_error: true}
     # Sane string booleans still parse rather than forcing YAML-native only.
     config = load_config(write(("continue_on_error: true", 'continue_on_error: "false"')))
     assert config.run.continue_on_error is False
+
+
+def test_news_max_pages_is_configurable_and_validated(tmp_path):
+    from pipeline.config import ConfigError, load_config
+
+    path = _write(tmp_path, lambda b: b["news"].update(max_pages=9))
+    assert load_config(path).news.max_pages == 9
+    import pytest as _pytest
+
+    path = _write(tmp_path, lambda b: b["news"].update(max_pages=0), name="c0.yaml")
+    with _pytest.raises(ConfigError, match="news.max_pages"):
+        load_config(path)

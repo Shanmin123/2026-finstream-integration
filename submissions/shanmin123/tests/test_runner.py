@@ -48,7 +48,7 @@ class FakeClient:
                              since_utc=None, max_pages=5):
         self.news_calls.append(
             {"symbol": symbol, "start": start, "end": end, "limit": limit,
-             "since_utc": since_utc}
+             "since_utc": since_utc, "max_pages": max_pages}
         )
         return [
             {
@@ -138,6 +138,7 @@ def test_news_run_uses_checkpoint_overlap_and_advances_after_write(pipeline_conf
     assert client.news_calls[0]["start"] == "2025-01-03 00:00:00.0"
     assert client.news_calls[0]["end"] == client.news_calls[0]["start"]
     assert client.news_calls[0]["since_utc"] == "2025-01-02T10:55:00+00:00"
+    assert client.news_calls[0]["max_pages"] == 5
     state = checkpoint.load()
     assert state["news"]["AAPL"]["last_published_at_utc"] == "2025-01-02T12:00:00+00:00"
 
@@ -584,10 +585,13 @@ def test_rejection_arriving_at_shutdown_is_not_erased(pipeline_config):
     assert sorted(quotes["value"]) == [150.0, 151.0]
 
 
-def test_truncated_news_walk_checkpoints_the_oldest_not_the_newest(pipeline_config):
-    """If the page budget ran out with IB still flagging older unread
-    headlines, checkpointing the newest would skip them forever; the next
-    run must re-anchor at the oldest collected and keep digging."""
+def test_truncated_news_walk_holds_the_checkpoint_and_reports_the_gap(pipeline_config, caplog):
+    """Every walk anchors at "now", so when the page budget runs out with IB
+    still flagging older unread headlines, NO checkpoint value makes the next
+    default run reach deeper: advancing would skip the remainder forever and
+    a fake step downward would livelock. The checkpoint holds, the gap is
+    logged, and news.max_pages is the operator's lever."""
+    import logging
 
     class TruncatedNewsClient(FakeClient):
         def fetch_news_headlines(self, symbol, *_args, **_kwargs):
@@ -605,11 +609,18 @@ def test_truncated_news_walk_checkpoints_the_oldest_not_the_newest(pipeline_conf
             ]
             return rows, False   # page budget spent, more remain below
 
+    checkpoint = CheckpointStore(pipeline_config.paths.checkpoint_file)
+    checkpoint.update_news("AAPL", "2025-01-01T08:00:00+00:00")
     client = TruncatedNewsClient()
     runner = make_runner(pipeline_config, client)
-    runner.run_news()
-    state = CheckpointStore(pipeline_config.paths.checkpoint_file).load()
+    with caplog.at_level(logging.WARNING, logger="ibkr_pipeline"):
+        runner.run_news()
+    state = checkpoint.load()
     assert (
         state["news"]["AAPL"]["last_published_at_utc"]
-        == "2025-01-02T09:00:00+00:00"
+        == "2025-01-01T08:00:00+00:00"
+    ), "an uncovered interval must not advance the checkpoint"
+    assert any(
+        "news_backlog_exceeds_page_budget" in record.message
+        for record in caplog.records
     )
