@@ -92,6 +92,87 @@ def test_ibapi_client_converts_news_callbacks_and_cleans_tags(monkeypatch):
     assert "article_text" not in rows[0]
 
 
+def test_late_bars_after_a_timeout_do_not_recreate_the_freed_buffer(monkeypatch):
+    """A historical response can land after its request timed out and was
+    cleaned up. setdefault in the callback would silently recreate the buffer,
+    which then leaks forever because no caller is left to pop it; the live
+    request must also be cancelled so the retry does not stack on top of it."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=0.05)
+    monkeypatch.setattr(
+        client, "resolve_stock_contract", lambda _symbol: qualified_contract()
+    )
+    monkeypatch.setattr(client, "reqHistoricalData", lambda *_args: None)
+    cancels = []
+    monkeypatch.setattr(client, "cancelHistoricalData", lambda rid: cancels.append(rid))
+
+    with pytest.raises(TimeoutError):
+        client.fetch_daily_bars("AAPL", "7 D")
+    assert cancels, "the timed-out request must be cancelled"
+
+    late = SimpleNamespace(
+        date="20250102", open=1.0, high=1.0, low=1.0, close=1.0,
+        volume=1.0, barCount=1, average=1.0,
+    )
+    client.historicalData(cancels[0], late)
+    assert client._bars == {}, "a late bar must not recreate the freed buffer"
+
+
+def test_news_pagination_follows_has_more_and_stops_at_the_checkpoint(monkeypatch):
+    """One page holds `limit` headlines; when IB flags hasMore the client must
+    re-anchor at the oldest received time and keep walking backwards, or a
+    burst larger than one page loses its older headlines permanently."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(
+        client, "resolve_stock_contract", lambda _symbol: qualified_contract()
+    )
+    anchors = []
+
+    def req_historical_news(req_id, _con_id, _codes, start, end, _limit, _opts):
+        anchors.append((start, end))
+        if len(anchors) == 1:
+            client.historicalNews(req_id, "2025-01-02 12:00:00.0", "BRFG", "a-3", "h3")
+            client.historicalNews(req_id, "2025-01-02 11:00:00.0", "BRFG", "a-2", "h2")
+            client.historicalNewsEnd(req_id, True)
+        else:
+            # The inclusive anchor re-returns the boundary article.
+            client.historicalNews(req_id, "2025-01-02 11:00:00.0", "BRFG", "a-2", "h2")
+            client.historicalNews(req_id, "2025-01-02 10:00:00.0", "BRFG", "a-1", "h1")
+            client.historicalNewsEnd(req_id, False)
+
+    monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
+
+    rows = client.fetch_news_headlines(
+        "AAPL", ["BRFG"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 2,
+        since_utc="2025-01-01T00:00:00+00:00",
+    )
+    assert [row["article_id"] for row in rows] == ["a-3", "a-2", "a-1"]
+    # Page 2 re-anchors both bounds at the oldest time of page 1.
+    assert anchors[1] == ("2025-01-02 11:00:00.0", "2025-01-02 11:00:00.0")
+    assert client._news == {} and client._news_has_more == {}
+
+
+def test_news_pagination_stops_once_the_checkpoint_is_reached(monkeypatch):
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(
+        client, "resolve_stock_contract", lambda _symbol: qualified_contract()
+    )
+    pages = []
+
+    def req_historical_news(req_id, *_args):
+        pages.append(req_id)
+        client.historicalNews(req_id, "2025-01-02 12:00:00.0", "BRFG", "a-2", "h2")
+        client.historicalNews(req_id, "2025-01-02 11:00:00.0", "BRFG", "a-1", "h1")
+        client.historicalNewsEnd(req_id, True)   # IB says more exist...
+
+    monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
+    rows = client.fetch_news_headlines(
+        "AAPL", ["BRFG"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 2,
+        since_utc="2025-01-02T11:30:00+00:00",  # ...but the checkpoint is newer
+    )
+    assert len(pages) == 1, "older-than-checkpoint pages must not be requested"
+    assert [row["article_id"] for row in rows] == ["a-2", "a-1"]
+
+
 def test_ibapi_client_lists_provider_callbacks(monkeypatch):
     client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
 

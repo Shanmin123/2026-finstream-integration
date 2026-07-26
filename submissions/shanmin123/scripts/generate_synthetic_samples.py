@@ -25,7 +25,6 @@ NEWS_FIELDS = (
     "provider_code",
     "article_id",
     "headline",
-    "extra_data",
 )
 
 
@@ -87,7 +86,6 @@ def main():
                 "provider_code": "DEMO",
                 "article_id": "synthetic-1",
                 "headline": "Synthetic company update",
-                "extra_data": "",
             },
             {
                 "published_at_utc": "2025-01-03T12:00:00+00:00",
@@ -97,7 +95,6 @@ def main():
                 "provider_code": "DEMO",
                 "article_id": "synthetic-2",
                 "headline": "Synthetic analyst headline",
-                "extra_data": "",
             },
         ],
     )

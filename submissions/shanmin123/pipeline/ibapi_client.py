@@ -55,6 +55,7 @@ class IBApiClient(EWrapper, EClient):
         self._contract_details = {}
         self._bars = {}
         self._news = {}
+        self._news_has_more = {}
 
         self._providers_event = threading.Event()
         self._providers = []
@@ -180,8 +181,15 @@ class IBApiClient(EWrapper, EClient):
             self._clean_request(request_id)
             self._contract_details.pop(request_id, None)
 
+    # Response callbacks append only to a buffer that still exists. A response
+    # landing AFTER its request timed out and was cleaned up must be ignored:
+    # setdefault would silently recreate the buffer, which then leaks forever
+    # because no caller is left to pop it.
+
     def contractDetails(self, reqId, contractDetails):
-        self._contract_details.setdefault(reqId, []).append(contractDetails)
+        bucket = self._contract_details.get(reqId)
+        if bucket is not None:
+            bucket.append(contractDetails)
 
     def contractDetailsEnd(self, reqId):
         self._finish_request(reqId)
@@ -203,7 +211,14 @@ class IBApiClient(EWrapper, EClient):
                 False,
                 [],
             )
-            self._wait_for_request(request_id, "historical daily bars")
+            try:
+                self._wait_for_request(request_id, "historical daily bars")
+            except TimeoutError:
+                # The request is still live on the Gateway: cancel it so the
+                # retry does not stack a second identical request on top of it
+                # (pacing pressure) and so its late bars go nowhere.
+                self.cancelHistoricalData(request_id)
+                raise
             return [
                 self._normalise_bar(symbol, contract, bar)
                 for bar in self._bars[request_id]
@@ -213,7 +228,9 @@ class IBApiClient(EWrapper, EClient):
             self._bars.pop(request_id, None)
 
     def historicalData(self, reqId, bar):
-        self._bars.setdefault(reqId, []).append(bar)
+        bucket = self._bars.get(reqId)
+        if bucket is not None:
+            bucket.append(bar)
 
     def historicalDataEnd(self, reqId, start, end):
         self._finish_request(reqId)
@@ -247,42 +264,87 @@ class IBApiClient(EWrapper, EClient):
             self._providers_error = exc
         self._providers_event.set()
 
-    def fetch_news_headlines(self, symbol, provider_codes, start, end, limit):
+    def fetch_news_headlines(self, symbol, provider_codes, start, end, limit,
+                             since_utc=None, max_pages=5):
+        """Fetch headlines, following IB's backwards pagination.
+
+        reqHistoricalNews returns up to ``limit`` headlines at or before the
+        anchor time (newest first) and flags ``hasMore`` when the window holds
+        older ones. Without following that flag, a burst larger than ``limit``
+        between two runs would lose its older headlines permanently. Each next
+        page re-anchors at the oldest time received; the walk stops when the
+        feed is exhausted, ``since_utc`` (ISO timestamp, e.g. the caller's
+        checkpoint) is reached, or ``max_pages`` is hit. The inclusive anchor
+        re-returns the boundary article, so already-seen article ids are
+        skipped.
+        """
         contract = self.resolve_stock_contract(symbol)
-        request_id = self._new_request()
-        self._news[request_id] = []
-        try:
-            self.reqHistoricalNews(
-                request_id,
-                contract.conId,
-                "+".join(provider_codes),
-                start,
-                end,
-                limit,
-                [],
+        stop_at = None
+        if since_utc:
+            stop_at = datetime.fromisoformat(
+                str(since_utc).replace("Z", "+00:00")
             )
-            self._wait_for_request(request_id, "historical news headlines")
-            return [
-                {
-                    "published_at_utc": self._parse_news_time(row[0]),
-                    "symbol": symbol,
-                    "con_id": contract.conId,
-                    "provider_code": row[1],
-                    "article_id": row[2],
-                    "headline": self._clean_headline(row[3]),
-                }
-                for row in self._news[request_id]
-            ]
-        finally:
-            self._clean_request(request_id)
-            self._news.pop(request_id, None)
+            if stop_at.tzinfo is None:
+                stop_at = stop_at.replace(tzinfo=timezone.utc)
+        collected = []
+        seen_ids = set()
+        page_start, page_end = start, end
+        for _page in range(max(1, int(max_pages))):
+            request_id = self._new_request()
+            self._news[request_id] = []
+            self._news_has_more[request_id] = False
+            try:
+                self.reqHistoricalNews(
+                    request_id,
+                    contract.conId,
+                    "+".join(provider_codes),
+                    page_start,
+                    page_end,
+                    limit,
+                    [],
+                )
+                self._wait_for_request(request_id, "historical news headlines")
+                raw = list(self._news[request_id])
+                has_more = self._news_has_more[request_id]
+            finally:
+                self._clean_request(request_id)
+                self._news.pop(request_id, None)
+                self._news_has_more.pop(request_id, None)
+            fresh = []
+            for row in raw:
+                if row[2] in seen_ids:
+                    continue
+                seen_ids.add(row[2])
+                fresh.append(
+                    {
+                        "published_at_utc": self._parse_news_time(row[0]),
+                        "symbol": symbol,
+                        "con_id": contract.conId,
+                        "provider_code": row[1],
+                        "article_id": row[2],
+                        "headline": self._clean_headline(row[3]),
+                    }
+                )
+            collected.extend(fresh)
+            if not has_more or not fresh:
+                break
+            oldest = min(
+                datetime.fromisoformat(item["published_at_utc"]) for item in fresh
+            )
+            if stop_at is not None and oldest <= stop_at:
+                break
+            # Same both-bounds anchoring that the first page uses.
+            page_start = page_end = oldest.strftime("%Y-%m-%d %H:%M:%S.0")
+        return collected
 
     def historicalNews(self, requestId, time, providerCode, articleId, headline):
-        self._news.setdefault(requestId, []).append(
-            (time, providerCode, articleId, headline)
-        )
+        bucket = self._news.get(requestId)
+        if bucket is not None:
+            bucket.append((time, providerCode, articleId, headline))
 
     def historicalNewsEnd(self, requestId, hasMore):
+        if requestId in self._news_has_more:
+            self._news_has_more[requestId] = bool(hasMore)
         self._finish_request(requestId)
 
     def _new_request(self):

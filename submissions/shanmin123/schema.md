@@ -1,5 +1,13 @@
 # Output Schemas
 
+Every column lives in the data files themselves; the `event_year=`/`event_date=`
+and `symbol=` directory names organise the layout and are not needed to
+reconstruct any column. Read the parquet datasets by file path or glob, e.g.
+`spark.read.parquet(f"{root}/event_year=*/symbol=*/part-000.parquet")`, rather
+than pointing Spark at the bare dataset root: hive-style partition discovery
+would derive a `symbol` column from the directory names that collides with the
+`symbol` column already present in the files.
+
 ## Raw JSONL Envelope
 
 Each raw file contains one JSON object and a trailing newline.
@@ -46,7 +54,6 @@ Deduplication key: `(symbol, provider_code, article_id)`.
 | `provider_code` | string | IBKR news provider code |
 | `article_id` | string | Provider-specific article identifier |
 | `headline` | string | Headline with IBKR metadata tags removed |
-| `extra_data` | string | Optional headline metadata; null when unavailable |
 
 Final partition path:
 `news/event_date=YYYY-MM-DD/symbol=SYMBOL/part-000.parquet`.
@@ -54,18 +61,16 @@ Final partition path:
 Article body text is not part of this schema.
 
 IBKR historical news paginates BACKWARDS: `reqHistoricalNews` returns up to
-`limit` headlines at or before its `startDateTime`, so the collector anchors both
-bounds at the current time to take the most recent available, and incrementality
-comes from the `(symbol, provider_code, article_id)` dedup rather than from a
-moving window. Availability on the default free provider set also lags: at the
-time of collection the newest AAPL headline from BRFG/BRFUPDN/DJNL was about
-three months old, so this feed complements rather than replaces the primary news
-source.
-
-The same backwards pagination is what a deeper backfill would use: anchoring the
-request at the oldest headline already stored returns the ones before it, so the
-history can be walked back `limit` headlines at a time. The collector does not
-do this today — it keeps the feed current — but no API limitation prevents it.
+`limit` headlines at or before its anchor and flags `hasMore` when older ones
+remain. The collector anchors each run at the current time and follows that
+flag page by page, re-anchoring at the oldest time received, until the
+checkpoint minus the configured overlap is reached — so a burst larger than one
+page between runs is not lost. The `(symbol, provider_code, article_id)` dedup
+absorbs the boundary article each next page re-returns. A deeper backfill is
+the same walk with an older stop time. Availability on the default free
+provider set lags: at the time of collection the newest AAPL headline from
+BRFG/BRFUPDN/DJNL was about three months old, so this feed complements rather
+than replaces the primary news source.
 
 ## Final Indicators Parquet
 

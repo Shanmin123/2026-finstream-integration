@@ -86,6 +86,30 @@ def test_spark_351_reads_final_partitioned_parquet(pipeline_config):
         ("symbol", "event_date"),
         "computed_at_utc",
     )
+    # The streaming outputs use the same writers; cover their schemas too.
+    from pipeline.features import compute_live_features
+
+    quotes_result = storage.write_quotes(
+        [
+            {"tick_time_utc": "2025-02-14T14:30:00+00:00",
+             "session_date": "2025-02-14", "symbol": "AAPL",
+             "field": "last", "value": 130.0},
+        ],
+        {"symbols": ["AAPL"]},
+        retrieved_at,
+        "spark-quotes-test",
+    )
+    live_i, live_a = compute_live_features(
+        synthetic,
+        {"AAPL": {"event_date": "2025-02-14", "close": 130.0}},
+        retrieved_at,
+    )
+    live_i_result = storage.write_derived(
+        "indicators_live", live_i, ("symbol", "event_date"), "as_of_utc"
+    )
+    live_a_result = storage.write_derived(
+        "alphas_live", live_a, ("symbol", "event_date"), "as_of_utc"
+    )
 
     try:
         prices = spark.read.parquet(str(price_result.final_paths[0]))
@@ -102,5 +126,15 @@ def test_spark_351_reads_final_partitioned_parquet(pipeline_config):
         assert "rsi_14" in indicators.columns
         assert alphas.count() == 30
         assert "alpha_101" in alphas.columns
+
+        quotes = spark.read.parquet(str(quotes_result.final_paths[0]))
+        assert quotes.count() == 1
+        assert {"tick_time_utc", "session_date", "field", "value"} <= set(quotes.columns)
+        live_indicators = spark.read.parquet(str(live_i_result.final_paths[0]))
+        live_alphas = spark.read.parquet(str(live_a_result.final_paths[0]))
+        assert live_indicators.count() == 1
+        assert bool(live_indicators.select("provisional").first()[0]) is True
+        assert "as_of_utc" in live_indicators.columns
+        assert live_alphas.count() == 1
     finally:
         spark.stop()

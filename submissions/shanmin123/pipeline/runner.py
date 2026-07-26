@@ -1,4 +1,5 @@
 import logging
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -86,7 +87,12 @@ class PipelineRunner:
             self.logger.info("gateway_disconnected")
 
     def _collect_prices(self):
-        summary = {"written": 0, "errors": []}
+        # earliest_event_date is the low-water mark of what this run
+        # actually fetched: a backfill starts years back, a daily increment a
+        # few days back. Database loaders push rows from it forward, which is
+        # exactly the "freshly collected" set (plus the re-fetched overlap the
+        # conflict clauses absorb) instead of guessing one panel-wide date.
+        summary = {"written": 0, "errors": [], "earliest_event_date": None}
         state = self.checkpoint.load()
         for index, symbol in enumerate(self.config.prices.symbols):
             if index and self.config.run.symbol_delay_seconds > 0:
@@ -126,6 +132,10 @@ class PipelineRunner:
                     state.setdefault("prices", {})[symbol] = {
                         "last_event_date": last_date
                     }
+                    first_date = min(row["event_date"] for row in rows)
+                    earliest = summary["earliest_event_date"]
+                    if earliest is None or first_date < earliest:
+                        summary["earliest_event_date"] = first_date
                 summary["written"] += len(rows)
                 self.logger.info(
                     "dataset_write_complete",
@@ -150,13 +160,14 @@ class PipelineRunner:
             if index and self.config.run.symbol_delay_seconds > 0:
                 self.sleep_fn(self.config.run.symbol_delay_seconds)
             now = self._utc_now()
-            # reqHistoricalNews paginates BACKWARDS from startDateTime: it
-            # returns up to `limit` headlines at or before it. Passing the
-            # checkpoint time as the start therefore walked further into the
-            # past on every run instead of collecting new items. Anchoring at
-            # "now" returns the most recent headlines available; incrementality
-            # comes from the article_id dedup in storage, and the checkpoint
-            # records how far the feed has actually advanced.
+            # reqHistoricalNews paginates BACKWARDS from the anchor: it returns
+            # up to `limit` headlines at or before it. Passing the checkpoint
+            # time as the anchor therefore walked further into the past on
+            # every run instead of collecting new items. Anchoring at "now"
+            # returns the newest headlines, and the client keeps paging
+            # backwards while IB flags more until the checkpoint (with its
+            # overlap) is reached, so a burst larger than one page is not
+            # lost. The article_id dedup in storage absorbs the overlap.
             anchor = self._format_ib_time(now)
             seen_after = self._news_start(state, symbol, now)
             request = {
@@ -165,6 +176,7 @@ class PipelineRunner:
                 "start": anchor,
                 "end": anchor,
                 "limit": self.config.news.limit,
+                "since_utc": seen_after.isoformat(),
             }
             try:
                 rows = self._with_retries(
@@ -177,6 +189,7 @@ class PipelineRunner:
                             request["start"],
                             request["end"],
                             request["limit"],
+                            since_utc=request["since_utc"],
                         )
                     ),
                 )
@@ -292,22 +305,26 @@ class PipelineRunner:
         # Latest observed value per (symbol, field): the provisional bar carries
         # the real streamed open/high/low/volume, never a fabricated one.
         bars = {}
+        # Drained but not yet durably flushed. A failure anywhere in the flush
+        # (parquet write, feature recompute, sink) leaves the batch here and the
+        # next flush -- including the shutdown drains -- retries it, so a
+        # drained tick is never lost. Replays are absorbed by the parquet
+        # dedup-merge and the database conflict clauses (at-least-once).
+        pending = []
 
         def flush():
-            rows = self.client.drain_ticks()
-            if not rows:
+            pending.extend(self.client.drain_ticks())
+            if not pending:
                 return
-            moved = set()
+            rows = list(pending)
             now = self._utc_now()
-            state["ticks"] += len(rows)
-            state["flushes"] += 1
-            result = self.storage.write_quotes(
+            self.storage.write_quotes(
                 rows,
                 {"symbols": symbols, "market_data_type": cfg.market_data_type},
                 now.isoformat(),
                 self._run_id("quotes", "stream", now),
             )
-            state["quote_rows"] += result.final_rows
+            moved = set()
             for row in rows:
                 field = row["field"]
                 # `close` is IB's previous-session close, not today's price.
@@ -334,43 +351,50 @@ class PipelineRunner:
                 and bar.get("close") is not None
                 and bar.get("event_date") == current
             }
-            if not priced:
-                if sink is not None:
-                    sink(rows, None, None)
-                return
-            # Recompute over the moved symbols only: passing the whole warm
-            # panel made every flush sort and group all 658 symbols, which on a
-            # full universe costs more than the flush interval itself.
-            subset = warm[warm["symbol"].isin(priced)]
-            missing = sorted(set(priced) - set(subset["symbol"].unique()))
-            if missing:
-                self.logger.warning(
-                    "live_features_without_price_history",
-                    extra={
-                        "dataset": "indicators_live",
-                        "symbol": ",".join(missing),
-                        "rows": 0,
-                    },
+            live_i = live_a = None
+            if priced:
+                # Recompute over the moved symbols only: passing the whole warm
+                # panel made every flush sort and group all 658 symbols, which
+                # on a full universe costs more than the flush interval itself.
+                subset = warm[warm["symbol"].isin(priced)]
+                missing = sorted(set(priced) - set(subset["symbol"].unique()))
+                if missing:
+                    self.logger.warning(
+                        "live_features_without_price_history",
+                        extra={
+                            "dataset": "indicators_live",
+                            "symbol": ",".join(missing),
+                            "rows": 0,
+                        },
+                    )
+                live_i, live_a = compute_live_features(
+                    subset, priced, now.isoformat()
                 )
-            live_i, live_a = compute_live_features(subset, priced, now.isoformat())
-            for dataset, frame in (
-                ("indicators_live", live_i),
-                ("alphas_live", live_a),
-            ):
-                written = self.storage.write_derived(
-                    dataset, frame, ("symbol", "event_date"), "as_of_utc"
-                )
-                state["feature_rows"] += written.final_rows
+                for dataset, frame in (
+                    ("indicators_live", live_i),
+                    ("alphas_live", live_a),
+                ):
+                    self.storage.write_derived(
+                        dataset, frame, ("symbol", "event_date"), "as_of_utc"
+                    )
             if sink is not None:
                 sink(rows, live_i, live_a)
-            self.logger.info(
-                "stream_flush",
-                extra={
-                    "dataset": "quotes+live_features",
-                    "symbol": "*",
-                    "rows": len(rows),
-                },
-            )
+            # Only now is the batch durable everywhere it goes; the counters
+            # therefore report rows actually delivered, not partition sizes.
+            pending.clear()
+            state["ticks"] += len(rows)
+            state["quote_rows"] += len(rows)
+            state["flushes"] += 1
+            if priced:
+                state["feature_rows"] += len(live_i) + len(live_a)
+                self.logger.info(
+                    "stream_flush",
+                    extra={
+                        "dataset": "quotes+live_features",
+                        "symbol": "*",
+                        "rows": len(rows),
+                    },
+                )
 
         def pipeline():
             self.client.start_quote_stream(
@@ -414,26 +438,36 @@ class PipelineRunner:
                 # cancel, then drain again for whatever arrived in between.
                 # Every step runs even if an earlier one raised: a sink that
                 # fails on the first drain must not strand the ticks the second
-                # one owns. The first failure is re-raised; later ones can only
-                # be logged, since one raise carries one exception.
+                # one owns.
+                primary = sys.exc_info()[1]
                 shutdown_errors = []
                 for step in (flush, self.client.stop_quote_stream, flush):
                     try:
                         step()
                     except BaseException as exc:  # KeyboardInterrupt too: deferred, not dropped
                         shutdown_errors.append(exc)
-                for extra_error in shutdown_errors[1:]:
+                # One raise carries one exception, so everything else is
+                # logged. When the stream body is already propagating a
+                # failure, that failure stays primary: a shutdown error must
+                # not replace the reason the run actually died.
+                secondary = shutdown_errors if primary is not None else shutdown_errors[1:]
+                for extra_error in secondary:
                     self.logger.error(
                         "stream_shutdown_step_failed",
                         exc_info=extra_error,
                         extra={"dataset": "quotes", "symbol": "*", "rows": 0},
                     )
-                if shutdown_errors:
-                    raise shutdown_errors[0]
-                self.logger.info(
-                    "stream_stopped",
-                    extra={"dataset": "quotes", "symbol": "*", "rows": state["ticks"]},
-                )
+                if primary is None:
+                    if shutdown_errors:
+                        raise shutdown_errors[0]
+                    self.logger.info(
+                        "stream_stopped",
+                        extra={
+                            "dataset": "quotes",
+                            "symbol": "*",
+                            "rows": state["ticks"],
+                        },
+                    )
             return {
                 "symbols": symbols,
                 "ticks": state["ticks"],

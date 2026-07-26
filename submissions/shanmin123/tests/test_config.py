@@ -141,3 +141,15 @@ def test_non_finite_flush_interval_is_rejected_at_load(tmp_path):
     path = _write(tmp_path, lambda b: b["stream"].update(flush_interval_seconds=float("nan")))
     with _pytest.raises(ConfigError):
         load_config(path)
+
+
+def test_resolve_universe_distinguishes_unreachable_from_empty():
+    """None means the platform database was unreachable -> configured fallback.
+    An empty list is a real answer (every company deactivated) and must NOT
+    fall back to the snapshot universe."""
+    from pipeline.config import resolve_universe
+
+    configured = ("AAPL", "MSFT")
+    assert resolve_universe(None, configured) == ("AAPL", "MSFT")
+    assert resolve_universe([], configured) == ()
+    assert resolve_universe(["brk.b", " ", "aapl"], configured) == ("BRK-B", "AAPL")

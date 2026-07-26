@@ -111,6 +111,23 @@ def canonical_symbol(value):
     return str(value).strip().upper().replace(".", "-")
 
 
+def resolve_universe(platform_tickers, configured):
+    """Choose the collection universe.
+
+    The platform's active tickers win whenever the platform answered --
+    including an empty list, which means every company is deactivated and
+    nothing should be collected. Only ``None`` (database unreachable) falls
+    back to the configured symbols file.
+    """
+    if platform_tickers is None:
+        return tuple(configured)
+    return tuple(
+        canonical_symbol(ticker)
+        for ticker in platform_tickers
+        if str(ticker).strip()
+    )
+
+
 def _canonical_symbols(values):
     seen = set()
     symbols = []

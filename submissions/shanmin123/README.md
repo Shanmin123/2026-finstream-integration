@@ -213,8 +213,11 @@ checkpoints store the latest durable `published_at_utc`. The checkpoint advances
 only after raw and Parquet writes complete.
 
 On restart, prices request the missing daily window with a three-day overlap.
-News restarts from the last headline time with the configured minute overlap.
-Partition writes then deduplicate prices by `(symbol, event_date)` and news by
+News anchors each run at the current time (`reqHistoricalNews` returns the
+newest headlines at or before its anchor) and follows IB's `hasMore` flag
+backwards page by page until the checkpoint time minus the configured minute
+overlap is reached, so a burst larger than one page is not lost. Partition
+writes then deduplicate prices by `(symbol, event_date)` and news by
 `(symbol, provider_code, article_id)`.
 
 ## Validation evidence

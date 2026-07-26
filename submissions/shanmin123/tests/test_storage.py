@@ -72,7 +72,6 @@ def test_news_write_deduplicates_by_symbol_provider_and_article(tmp_path):
             "provider_code": "BRFG",
             "article_id": "article-1",
             "headline": "Synthetic headline v1",
-            "extra_data": "",
         },
         {
             "published_at_utc": "2025-01-02T12:00:00+00:00",
@@ -81,7 +80,6 @@ def test_news_write_deduplicates_by_symbol_provider_and_article(tmp_path):
             "provider_code": "BRFG",
             "article_id": "article-1",
             "headline": "Synthetic headline v2",
-            "extra_data": "",
         },
     ]
 
@@ -96,9 +94,6 @@ def test_news_write_deduplicates_by_symbol_provider_and_article(tmp_path):
     assert result.final_rows == 1
     assert list(final["headline"]) == ["Synthetic headline v2"]
     assert "article_text" not in final.columns
-import pandas as pd
-
-from pipeline.storage import LayeredStorage
 
 
 def _quote(symbol, field, value, when):
@@ -202,3 +197,55 @@ def test_latest_year_only_refuses_partitions_that_are_not_four_digit_years(tmp_p
     assert len(storage.read_final_dataset("indicators")) == 2
     with pytest.raises(ValueError, match="non-YYYY year partitions"):
         storage.read_final_dataset("indicators", latest_year_only=True)
+
+
+def test_latest_year_only_rejects_unicode_digit_years(tmp_path):
+    """str.isdigit() accepts non-ASCII digits, which sort AFTER the ASCII
+    years and would silently win max() over the real newest partition."""
+    storage = LayeredStorage(
+        raw_dir=tmp_path / "raw",
+        intermediate_dir=tmp_path / "processed",
+        final_dir=tmp_path / "output",
+    )
+    frame = pd.DataFrame(
+        [
+            {"symbol": "AAA", "event_date": "2026-07-24", "rsi_14": 55.0,
+             "as_of_utc": "2026-07-24T00:00:00+00:00"},
+            {"symbol": "AAA", "event_date": "٢٠٢٧-07-24",
+             "rsi_14": 10.0, "as_of_utc": "2026-07-24T00:00:00+00:00"},
+        ]
+    )
+    storage.write_derived("indicators", frame, ("symbol", "event_date"), "as_of_utc")
+    with pytest.raises(ValueError, match="non-YYYY year partitions"):
+        storage.read_final_dataset("indicators", latest_year_only=True)
+
+
+def test_latest_year_only_opens_only_newest_year_files(tmp_path, monkeypatch):
+    """The point of the flag is bounded parquet I/O: older year partitions must
+    not be read and filtered afterwards."""
+    storage = LayeredStorage(
+        raw_dir=tmp_path / "raw",
+        intermediate_dir=tmp_path / "processed",
+        final_dir=tmp_path / "output",
+    )
+    frame = pd.DataFrame(
+        [
+            {"symbol": "AAA", "event_date": "2024-06-03", "rsi_14": 30.0,
+             "as_of_utc": "2024-06-03T00:00:00+00:00"},
+            {"symbol": "AAA", "event_date": "2026-07-24", "rsi_14": 55.0,
+             "as_of_utc": "2026-07-24T00:00:00+00:00"},
+        ]
+    )
+    storage.write_derived("indicators", frame, ("symbol", "event_date"), "as_of_utc")
+
+    opened = []
+    real_read = pd.read_parquet
+
+    def spy(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr("pipeline.storage.pd.read_parquet", spy)
+    newest = storage.read_final_dataset("indicators", latest_year_only=True)
+    assert list(newest["event_date"]) == ["2026-07-24"]
+    assert opened and all("event_year=2026" in path for path in opened)

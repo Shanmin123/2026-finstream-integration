@@ -31,7 +31,6 @@ NEWS_COLUMNS = (
     "provider_code",
     "article_id",
     "headline",
-    "extra_data",
 )
 
 
@@ -220,7 +219,12 @@ class LayeredStorage:
             # newest session. Refuse to guess.
             prefix = "event_year="
             years = {path.parent.parent.name[len(prefix):] for path in paths}
-            invalid = sorted(y for y in years if not (len(y) == 4 and y.isdigit()))
+            # isdigit() alone also accepts non-ASCII digits, which sort AFTER
+            # the ASCII years and would win max(); require plain 0-9.
+            invalid = sorted(
+                y for y in years
+                if not (len(y) == 4 and y.isascii() and y.isdigit())
+            )
             if invalid:
                 raise ValueError(
                     "%s has non-YYYY year partitions %s: the newest session "

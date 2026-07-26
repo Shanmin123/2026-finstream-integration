@@ -72,23 +72,25 @@ def _build_runner():
 )
 def ibkr_prices():
     @task
-    def collect_prices() -> int:
+    def collect_prices() -> dict:
         from pipeline import db_sink
 
         started = time.time()
         config, runner = _build_runner()
-        from pipeline.config import canonical_symbol
+        from pipeline.config import resolve_universe
 
         active = db_sink.get_active_tickers()
-        if active:
-            active = [canonical_symbol(ticker) for ticker in active if str(ticker).strip()]
-        if active:
+        if active is not None:
+            # The platform answered: its membership is the truth, including an
+            # empty list (every company deactivated -> collect nothing). Only
+            # an unreachable database falls back to the configured file.
+            symbols = resolve_universe(active, config.prices.symbols)
             from dataclasses import replace
 
             runner.config = replace(
-                config, prices=replace(config.prices, symbols=tuple(active))
+                config, prices=replace(config.prices, symbols=symbols)
             )
-            logger.info("universe from platform: %d tickers", len(active))
+            logger.info("universe from platform: %d tickers", len(symbols))
         summary = runner.run_prices()
         try:
             db_sink.record_run(
@@ -102,15 +104,15 @@ def ibkr_prices():
             # The database is optional: run telemetry must not fail a
             # collection that already produced its parquet datasets.
             logger.warning("pipeline_runs telemetry unavailable", exc_info=True)
-        return summary["written"]
+        return summary
 
     @task
-    def compute_features(_written: int) -> dict:
+    def compute_features(_collected: dict) -> dict:
         _config, runner = _build_runner()
         return runner.run_features()
 
     @task
-    def load_features_to_postgres(_features: dict) -> dict:
+    def load_features_to_postgres(_loaded: int) -> dict:
         """Upsert the newest session's derived rows into the platform tables.
 
         Reads what compute_features already wrote rather than recomputing it,
@@ -135,22 +137,31 @@ def ibkr_prices():
         }
 
     @task
-    def load_price_data_to_postgres(_features: dict) -> int:
-        """Upsert the freshly collected bars into the platform price_data table."""
+    def load_price_data_to_postgres(collected: dict, _features: dict) -> int:
+        """Upsert the bars this run actually collected into price_data.
+
+        The collector reports the earliest event_date it fetched, so a
+        backfill pushes the whole history (a gap filler must offer every bar)
+        while a daily increment pushes only the few overlap days it
+        re-requested. Pushing one panel-wide max date instead would load a
+        single session on a backfill and would skip a suspended ticker whose
+        newest bar predates the panel maximum.
+        """
         from pipeline import db_sink
 
+        watermark = collected.get("earliest_event_date")
+        if not watermark:
+            return 0
         _config, runner = _build_runner()
         prices = runner.storage.read_final_prices()
         if prices.empty:
             return 0
-        # The newest session present in the panel, across all symbols: a
-        # tail() would slice by the symbol-sorted order and miss most tickers.
-        latest = prices["event_date"].max()
-        rows = prices[prices["event_date"] == latest].to_dict("records")
+        rows = prices[prices["event_date"] >= watermark].to_dict("records")
         return db_sink.write_prices(rows)
 
-    features = compute_features(collect_prices())
-    load_features_to_postgres(load_price_data_to_postgres(features))
+    collected = collect_prices()
+    features = compute_features(collected)
+    load_features_to_postgres(load_price_data_to_postgres(collected, features))
 
 
 ibkr_prices()

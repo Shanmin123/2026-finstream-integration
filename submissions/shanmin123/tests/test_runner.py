@@ -44,9 +44,11 @@ class FakeClient:
     def list_news_providers(self):
         return [{"code": "BRFG", "name": "Briefing.com General Market Columns"}]
 
-    def fetch_news_headlines(self, symbol, provider_codes, start, end, limit):
+    def fetch_news_headlines(self, symbol, provider_codes, start, end, limit,
+                             since_utc=None, max_pages=5):
         self.news_calls.append(
-            {"symbol": symbol, "start": start, "end": end, "limit": limit}
+            {"symbol": symbol, "start": start, "end": end, "limit": limit,
+             "since_utc": since_utc}
         )
         return [
             {
@@ -56,7 +58,6 @@ class FakeClient:
                 "provider_code": "BRFG",
                 "article_id": "article-1",
                 "headline": "Synthetic headline",
-                "extra_data": "",
             }
         ]
 
@@ -85,6 +86,9 @@ def test_price_run_updates_checkpoint_only_after_durable_write(pipeline_config):
 
     assert summary["written"] == 2
     assert summary["errors"] == []
+    # The DB loader pushes from this low-water mark forward: everything the
+    # run fetched, not one panel-wide max date.
+    assert summary["earliest_event_date"] == "2025-01-02"
     assert client.connect_count == 1
     assert client.disconnect_count == 1
     assert client.price_calls[0]["duration"] == "3 Y"
@@ -129,9 +133,11 @@ def test_news_run_uses_checkpoint_overlap_and_advances_after_write(pipeline_conf
 
     assert summary["written"] == 1
     # reqHistoricalNews paginates backwards from the start anchor, so both
-    # bounds are "now"; the checkpoint bounds storage, not the request.
+    # bounds are "now"; the checkpoint (minus overlap) bounds the backwards
+    # walk instead of the request window.
     assert client.news_calls[0]["start"] == "2025-01-03 00:00:00.0"
     assert client.news_calls[0]["end"] == client.news_calls[0]["start"]
+    assert client.news_calls[0]["since_utc"] == "2025-01-02T10:55:00+00:00"
     state = checkpoint.load()
     assert state["news"]["AAPL"]["last_published_at_utc"] == "2025-01-02T12:00:00+00:00"
 
@@ -364,41 +370,29 @@ def test_news_window_uses_the_format_reqhistoricalnews_accepts():
     assert formatted == "2026-07-23 02:25:50.0"
 
 
-def test_stream_sink_receives_only_the_current_flush_rows(pipeline_config, tmp_path):
-    """The DB loader must forward each flush's own rows. Re-reading the session
-    partitions afterwards would re-send the whole trading day on every
-    scheduled run."""
-    import dataclasses
-
+def _seed_price_history(storage, *symbols):
+    """Write 40 business days of bars so live features have warm state."""
     import pandas as pd
 
-    storage = LayeredStorage(
-        pipeline_config.paths.raw_data_dir,
-        pipeline_config.paths.intermediate_data_dir,
-        pipeline_config.paths.output_dir,
-    )
     dates = pd.date_range("2026-01-02", periods=40, freq="B").strftime("%Y-%m-%d")
-    storage.write_prices(
-        [
-            {
-                "event_date": d, "symbol": "AAA", "con_id": 1, "exchange": "SMART",
-                "currency": "USD", "open": 100.0 + i, "high": 101.0 + i,
-                "low": 99.0 + i, "close": 100.5 + i, "volume": 1000.0,
-                "bar_count": 5, "wap": 100.2 + i,
-            }
-            for i, d in enumerate(dates)
-        ],
-        {"symbol": "AAA"}, "2026-07-24T00:00:00+00:00", "seed",
-    )
+    for symbol in symbols:
+        storage.write_prices(
+            [
+                {
+                    "event_date": d, "symbol": symbol, "con_id": 1,
+                    "exchange": "SMART", "currency": "USD", "open": 100.0 + i,
+                    "high": 101.0 + i, "low": 99.0 + i, "close": 100.5 + i,
+                    "volume": 1000.0, "bar_count": 5, "wap": 100.2 + i,
+                }
+                for i, d in enumerate(dates)
+            ],
+            {"symbol": symbol}, "2026-07-24T00:00:00+00:00", "seed-" + symbol,
+        )
 
-    def tick(value):
-        return {
-            "tick_time_utc": "2026-07-25T14:00:00+00:00",
-            "session_date": "2026-07-25", "symbol": "AAA",
-            "field": "last", "value": value,
-        }
 
-    client = FakeStreamClient([[tick(150.0)], [tick(151.0)]])
+def _stream_runner(pipeline_config, client, storage, sleep_fn=lambda _s: None):
+    import dataclasses
+
     config = dataclasses.replace(
         pipeline_config,
         stream=dataclasses.replace(
@@ -406,68 +400,56 @@ def test_stream_sink_receives_only_the_current_flush_rows(pipeline_config, tmp_p
             duration_seconds=1, flush_interval_seconds=0.1,
         ),
     )
-    runner = PipelineRunner(
+    return PipelineRunner(
         config=config, client=client, storage=storage,
         checkpoint=CheckpointStore(config.paths.checkpoint_file),
         now_fn=lambda: datetime(2026, 7, 25, 14, 5, tzinfo=timezone.utc),
-        sleep_fn=lambda _s: None,
+        sleep_fn=sleep_fn,
     )
+
+
+def _stream_storage(pipeline_config):
+    storage = LayeredStorage(
+        pipeline_config.paths.raw_data_dir,
+        pipeline_config.paths.intermediate_data_dir,
+        pipeline_config.paths.output_dir,
+    )
+    _seed_price_history(storage, "AAA")
+    return storage
+
+
+def _aaa_tick(value, at="14:00:00"):
+    return {
+        "tick_time_utc": "2026-07-25T" + at + "+00:00",
+        "session_date": "2026-07-25", "symbol": "AAA",
+        "field": "last", "value": value,
+    }
+
+
+def test_stream_sink_receives_only_the_current_flush_rows(pipeline_config):
+    """The DB loader must forward each flush's own rows. Re-reading the session
+    partitions afterwards would re-send the whole trading day on every
+    scheduled run."""
+    storage = _stream_storage(pipeline_config)
+    client = FakeStreamClient([[_aaa_tick(150.0)], [_aaa_tick(151.0)]])
+    runner = _stream_runner(pipeline_config, client, storage)
     seen = []
     runner.run_stream_pipeline(sink=lambda ticks, i, a: seen.append(len(ticks)))
     # Two flushes of one tick each -- never the accumulated two.
     assert seen == [1, 1]
 
 
-def test_shutdown_drains_again_even_when_the_sink_fails(pipeline_config):
-    """A sink failure on the pre-cancel drain must not strand the ticks that
-    arrive while it runs: the post-cancel drain still owns them, and the sink
-    error surfaces afterwards rather than silently dropping data."""
-    import dataclasses
+def test_shutdown_retries_a_failed_batch_and_drains_the_rest(pipeline_config):
+    """A sink failure keeps its batch pending: the post-cancel drain retries it
+    together with whatever arrived in between (at-least-once, the conflict
+    clauses absorb the replay), and the sink error still surfaces."""
 
     def interrupt(_seconds):
         raise KeyboardInterrupt
 
-    def tick(value):
-        return {
-            "tick_time_utc": "2026-07-25T14:00:00+00:00",
-            "session_date": "2026-07-25", "symbol": "AAA",
-            "field": "last", "value": value,
-        }
-
-    storage = LayeredStorage(
-        pipeline_config.paths.raw_data_dir,
-        pipeline_config.paths.intermediate_data_dir,
-        pipeline_config.paths.output_dir,
-    )
-    import pandas as pd
-
-    dates = pd.date_range("2026-01-02", periods=40, freq="B").strftime("%Y-%m-%d")
-    storage.write_prices(
-        [
-            {
-                "event_date": d, "symbol": "AAA", "con_id": 1, "exchange": "SMART",
-                "currency": "USD", "open": 100.0 + i, "high": 101.0 + i,
-                "low": 99.0 + i, "close": 100.5 + i, "volume": 1000.0,
-                "bar_count": 5, "wap": 100.2 + i,
-            }
-            for i, d in enumerate(dates)
-        ],
-        {"symbol": "AAA"}, "2026-07-24T00:00:00+00:00", "seed",
-    )
-    client = FakeStreamClient([[tick(150.0)], [tick(151.0)]])
-    config = dataclasses.replace(
-        pipeline_config,
-        stream=dataclasses.replace(
-            pipeline_config.stream, symbols=("AAA",),
-            duration_seconds=1, flush_interval_seconds=0.1,
-        ),
-    )
-    runner = PipelineRunner(
-        config=config, client=client, storage=storage,
-        checkpoint=CheckpointStore(config.paths.checkpoint_file),
-        now_fn=lambda: datetime(2026, 7, 25, 14, 5, tzinfo=timezone.utc),
-        sleep_fn=interrupt,
-    )
+    storage = _stream_storage(pipeline_config)
+    client = FakeStreamClient([[_aaa_tick(150.0)], [_aaa_tick(151.0)]])
+    runner = _stream_runner(pipeline_config, client, storage, sleep_fn=interrupt)
     seen = []
 
     def sink(ticks, _indicators, _alphas):
@@ -478,4 +460,58 @@ def test_shutdown_drains_again_even_when_the_sink_fails(pipeline_config):
     with pytest.raises(RuntimeError, match="sink down"):
         runner.run_stream_pipeline(sink=sink)
     assert client.stopped == 1
-    assert seen == [[150.0], [151.0]]
+    # The failed batch is retried with the newly drained tick, not dropped.
+    assert seen == [[150.0], [150.0, 151.0]]
+
+
+def test_interrupt_inside_a_flush_does_not_lose_the_drained_batch(pipeline_config):
+    """Ctrl-C landing inside the write path used to be read as a graceful stop
+    while the already-drained ticks vanished: they were out of the buffer but
+    not yet in parquet. The pending batch must survive into the shutdown
+    drains and the run must still report what it durably flushed."""
+    import pandas as pd
+
+    storage = _stream_storage(pipeline_config)
+    client = FakeStreamClient(
+        [[_aaa_tick(150.0)], [_aaa_tick(151.0, at="14:00:05")]]
+    )
+    runner = _stream_runner(pipeline_config, client, storage)
+
+    real_write = storage.write_quotes
+    calls = {"n": 0}
+
+    def interrupted_write(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise KeyboardInterrupt
+        return real_write(*args, **kwargs)
+
+    storage.write_quotes = interrupted_write
+    result = runner.run_stream_pipeline()
+    assert result["ticks"] == 2
+    assert client.stopped == 1
+    quotes = pd.concat(
+        [pd.read_parquet(p) for p in storage.final_dir.glob("quotes/**/*.parquet")],
+        ignore_index=True,
+    )
+    assert sorted(quotes["value"]) == [150.0, 151.0]
+
+
+def test_stream_failure_is_not_replaced_by_a_shutdown_failure(pipeline_config):
+    """When the stream itself died, the caller must see that error even if a
+    shutdown drain also fails; the drain failure is secondary and logged."""
+
+    class DeadStreamClient(FakeStreamClient):
+        def stream_error(self):
+            return RuntimeError("stream died")
+
+    storage = _stream_storage(pipeline_config)
+    client = DeadStreamClient([[_aaa_tick(150.0)]])
+    runner = _stream_runner(pipeline_config, client, storage)
+
+    def sink(_ticks, _indicators, _alphas):
+        raise ValueError("sink down")
+
+    with pytest.raises(RuntimeError, match="stream died"):
+        runner.run_stream_pipeline(sink=sink)
+    assert client.stopped == 1
