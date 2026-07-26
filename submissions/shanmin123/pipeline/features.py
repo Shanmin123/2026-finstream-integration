@@ -129,9 +129,14 @@ def compute_indicators(prices, computed_at_utc):
         avg_loss = _wilder_smooth(loss, 14)
         rs = avg_gain / avg_loss
         rsi = 100.0 - (100.0 / (1.0 + rs))
-        out["rsi_14"] = rsi.where(avg_loss > 0.0, 100.0).where(
-            ~(avg_gain + avg_loss).isna(), np.nan
-        )
+        # avg_loss == 0 splits into two cases: gains only -> RSI 100, and a
+        # perfectly flat window (both averages zero) -> 0/0, which is
+        # undefined, not "strongest". Halted and sub-dollar names really do
+        # flatline for 14+ sessions, and reporting maximum strength there is
+        # wrong; degenerate denominators yield NaN, as everywhere else.
+        rsi = rsi.where(avg_loss > 0.0, 100.0)
+        rsi = rsi.where((avg_gain > 0.0) | (avg_loss > 0.0), np.nan)
+        out["rsi_14"] = rsi.where(~(avg_gain + avg_loss).isna(), np.nan)
 
         mid = close.rolling(20).mean()
         std = close.rolling(20).std(ddof=0)

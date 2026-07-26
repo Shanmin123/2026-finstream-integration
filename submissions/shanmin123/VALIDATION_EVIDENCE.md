@@ -20,8 +20,10 @@ Integrity checks over the full panel (not a sample):
 * 0 infinities in indicators and alphas. (An earlier build had 9,984 `±inf`
   `alpha_53` values across 601 symbols where `close == low` made the denominator
   zero; degenerate denominators now yield NaN and the datasets were regenerated.)
-* Indicator warm-up NaNs only, and only where the window requires them; RSI stays
-  within 0-100, Bollinger bands never invert, ATR is never negative.
+* Indicator warm-up NaNs only, and only where the window requires them; defined
+  RSI spans [0.63, 98.20] on the delivered panel (a flat 14-session window
+  would be 0/0 and stays NaN; none occurs in this panel), Bollinger bands
+  never invert, ATR is never negative.
 
 ## Live Gateway verification
 
@@ -36,7 +38,7 @@ Integrity checks over the full panel (not a sample):
 
 ## Test suite
 
-94 tests green under the production contract (Python 3.8-compatible pins,
+95 tests green under the production contract (Python 3.8-compatible pins,
 pandas 1.3.5, numpy 1.22.4, pyarrow 12.0.1), and every source file compiles
 under Python 3.8.20. PySpark 3.5.1 + Java 17 reads a written partition of all
 seven final datasets (prices, news, indicators, alphas, quotes, and both live

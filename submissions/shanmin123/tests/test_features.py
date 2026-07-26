@@ -353,3 +353,32 @@ def test_db_mapping_drops_infinities_as_well_as_nans():
     )
     mapped = derived_frame_to_platform(frame)
     assert [row[3] for row in mapped] == ["alpha_101"]
+
+
+def test_flat_series_rsi_is_undefined_not_maximum_strength():
+    """A 14-day window with zero gains AND zero losses is Wilder's 0/0 case.
+    Halted and sub-dollar names really do flatline; reporting RSI 100 there
+    read as strongest-possible momentum on a dead stock. Undefined -> NaN,
+    the same policy as every other degenerate denominator. A falling series
+    still reads 0 and a rising one 100."""
+    import numpy as np
+    import pandas as pd
+
+    n = 60
+    dates = pd.date_range("2025-01-02", periods=n, freq="B").strftime("%Y-%m-%d")
+
+    def series(close):
+        return pd.DataFrame(
+            {
+                "symbol": "FLAT", "event_date": dates, "open": close,
+                "high": close, "low": close, "close": close, "volume": 0.0,
+            }
+        )
+
+    flat = compute_indicators(series(pd.Series([50.0] * n)), COMPUTED_AT)
+    assert flat["rsi_14"].isna().all()
+
+    falling = compute_indicators(
+        series(pd.Series(100.0 - np.arange(n))), COMPUTED_AT
+    )
+    assert falling["rsi_14"].dropna().iloc[-1] == pytest.approx(0.0)

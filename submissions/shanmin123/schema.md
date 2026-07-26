@@ -84,7 +84,7 @@ Deduplication key: `(symbol, event_date)`.
 | `sma_20`, `sma_50` | double | Simple moving averages of close |
 | `ema_12`, `ema_26` | double | Exponential moving averages of close |
 | `macd`, `macd_signal`, `macd_hist` | double | MACD(12,26,9) line, signal, histogram |
-| `rsi_14` | double | Wilder RSI over 14 sessions |
+| `rsi_14` | double | Wilder RSI over 14 sessions; a window with zero gains and zero losses (flat prices) is 0/0 and stays NaN |
 | `bb_mid_20`, `bb_upper_20`, `bb_lower_20` | double | Bollinger Bands (20, 2 std) |
 | `atr_14` | double | Wilder Average True Range over 14 sessions |
 | `obv` | double | On-Balance Volume (cumulative) |
