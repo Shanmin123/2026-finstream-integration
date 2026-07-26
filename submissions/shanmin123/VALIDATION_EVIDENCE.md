@@ -44,6 +44,28 @@ under Python 3.8.20. PySpark 3.5.1 + Java 17 reads a written partition of all
 seven final datasets (prices, news, indicators, alphas, quotes, and both live
 feature sets); read whole datasets by file glob as documented in `schema.md`.
 
+## Platform interface alignment
+
+Checked line by line against the platform-side code in the integration repo
+(`submissions/emaad-ahmad`, the team's EODHD/platform loaders), not against
+assumptions:
+
+* PostgreSQL env vars and defaults (`POSTGRES_HOST/PORT/USER/PASSWORD/DB`,
+  host `postgres`, user `finplatform`, db `financial_data`) — identical.
+* Universe query — the same statement verbatim
+  (`SELECT ticker FROM companies WHERE is_active = TRUE ORDER BY ticker`).
+* `price_data` insert column order, `ON CONFLICT (ticker, timestamp_ms,
+  interval) DO NOTHING`, and the `'1d'` interval literal — identical.
+* Daily `timestamp_ms` — both feeds compute UTC midnight of the trading date
+  with the same expression, so the gap-filler conflict key genuinely matches.
+* `pipeline_runs` telemetry columns (dag_id, start_time, end_time,
+  records_ingested, latency_seconds, status, error_message) — identical.
+* Scheduling — the EODHD daily DAG documents `0 4 * * 2-6`; this feed's DAG
+  docstring recommends `0 6 * * 2-6` so the gap filler runs after it.
+* News hand-off — platform news lives in MongoDB `news_articles` (the other
+  submission's scope); this feed keeps its complementary IBKR headlines in
+  parquet and does not write MongoDB.
+
 ## Known data characteristics, recorded rather than hidden
 
 * **2,281 zero-volume sessions** and 554 zero-`bar_count` rows, concentrated in

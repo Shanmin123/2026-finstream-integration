@@ -99,6 +99,45 @@ def _finite_positive(value, name, minimum):
     return max(number, minimum)
 
 
+def _require_positive(value, name):
+    """A timeout of zero, a negative, NaN, or infinity is a broken config,
+    not one to silently clamp: every request would fail instantly or wait
+    forever."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ConfigError("%s must be a number" % name)
+    if not math.isfinite(number) or number <= 0:
+        raise ConfigError("%s must be a positive finite number" % name)
+    return number
+
+
+def _as_items(value, name):
+    """A YAML scalar where a list belongs is a config mistake: iterating the
+    string would silently turn `symbols: AAPL` into A, P, L."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raise ConfigError("%s must be a list, not a single string" % name)
+    if not isinstance(value, (list, tuple)):
+        raise ConfigError("%s must be a list" % name)
+    return list(value)
+
+
+def _as_bool(value, name):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1", "on"):
+            return True
+        if lowered in ("false", "no", "0", "off"):
+            return False
+    raise ConfigError("%s must be a boolean" % name)
+
+
 def canonical_symbol(value):
     """One stored form per instrument.
 
@@ -156,7 +195,7 @@ def _symbols_from_csv(path):
 
 
 def _load_symbols(section, base_dir, fallback=None):
-    values = list(section.get("symbols") or [])
+    values = _as_items(section.get("symbols"), "symbols")
     symbols_file = section.get("symbols_file")
     if symbols_file:
         path = _resolve_path(base_dir, symbols_file, "symbols_file")
@@ -196,7 +235,9 @@ def load_config(path):
     if not price_symbols:
         raise ConfigError("prices must define symbols or symbols_file")
     news_symbols = _load_symbols(news_data, base_dir, fallback=price_symbols)
-    providers = _canonical_symbols(news_data.get("providers"))
+    providers = _canonical_symbols(
+        _as_items(news_data.get("providers"), "news.providers")
+    )
     if not providers:
         raise ConfigError("news.providers must contain at least one provider code")
 
@@ -204,8 +245,14 @@ def load_config(path):
         host=os.getenv("IB_HOST", str(ib_data.get("host", "127.0.0.1"))),
         port=int(os.getenv("IB_PORT", str(ib_data.get("port", 4002)))),
         client_id=int(os.getenv("IB_CLIENT_ID", str(ib_data.get("client_id", 31)))),
-        connect_timeout_seconds=float(ib_data.get("connect_timeout_seconds", 10)),
-        request_timeout_seconds=float(ib_data.get("request_timeout_seconds", 30)),
+        connect_timeout_seconds=_require_positive(
+            ib_data.get("connect_timeout_seconds", 10),
+            "ib.connect_timeout_seconds",
+        ),
+        request_timeout_seconds=_require_positive(
+            ib_data.get("request_timeout_seconds", 30),
+            "ib.request_timeout_seconds",
+        ),
     )
     paths = PathsConfig(
         raw_data_dir=_resolve_path(
@@ -227,7 +274,7 @@ def load_config(path):
     prices = PricesConfig(
         symbols=price_symbols,
         duration=str(prices_data.get("duration", "5 Y")),
-        use_rth=bool(prices_data.get("use_rth", True)),
+        use_rth=_as_bool(prices_data.get("use_rth", True), "prices.use_rth"),
     )
     news = NewsConfig(
         symbols=news_symbols,
@@ -239,7 +286,9 @@ def load_config(path):
     run = RunConfig(
         max_retries=_positive_int(run_data.get("max_retries", 3), "max_retries"),
         retry_delay_seconds=max(float(run_data.get("retry_delay_seconds", 2)), 0.0),
-        continue_on_error=bool(run_data.get("continue_on_error", True)),
+        continue_on_error=_as_bool(
+            run_data.get("continue_on_error", True), "run.continue_on_error"
+        ),
         symbol_delay_seconds=max(
             float(run_data.get("symbol_delay_seconds", 1.0)), 0.0
         ),
@@ -251,7 +300,9 @@ def load_config(path):
     # Same canonical form as the price and news universes: the live-feature
     # join against the price history is exact, and duplicates would open two
     # subscriptions for one instrument.
-    stream_symbols = _canonical_symbols(stream_data.get("symbols"))
+    stream_symbols = _canonical_symbols(
+        _as_items(stream_data.get("symbols"), "stream.symbols")
+    )
     # 0 is the documented "run until stopped" mode, so this is not _positive_int.
     # Validate before int(), or -0.5 truncates to 0 and silently becomes unbounded.
     raw_duration = stream_data.get("duration_seconds", 60)

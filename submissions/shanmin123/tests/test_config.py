@@ -155,3 +155,46 @@ def test_resolve_universe_distinguishes_unreachable_from_empty():
     assert resolve_universe(["brk.b", " ", "aapl"], configured) == ("BRK-B", "AAPL")
     # Aliases of one instrument collapse to a single request.
     assert resolve_universe(["BRK.B", "BRK-B"], configured) == ("BRK-B",)
+
+
+def test_scalar_where_a_list_belongs_is_rejected_not_iterated(tmp_path):
+    """YAML `symbols: AAPL` used to become ('A', 'P', 'L') and
+    `use_rth: "false"` used to become True."""
+    import pytest as _pytest
+
+    from pipeline.config import ConfigError, load_config
+
+    base = """
+ib: {host: "127.0.0.1", port: 4002, client_id: 1}
+paths:
+  raw_data_dir: raw
+  intermediate_data_dir: processed
+  output_dir: output
+  checkpoint_file: checkpoint.json
+  log_dir: logs
+prices: {symbols: [AAPL], duration: "1 Y", use_rth: true}
+news: {symbols: [AAPL], providers: [BRFG], lookback_days: 1, overlap_minutes: 5, limit: 10}
+run: {max_retries: 1, retry_delay_seconds: 0, continue_on_error: true}
+""".strip()
+
+    def write(mutation):
+        path = tmp_path / "config.yaml"
+        path.write_text(base.replace(*mutation), encoding="utf-8")
+        return path
+
+    with _pytest.raises(ConfigError, match="symbols must be a list"):
+        load_config(write(("symbols: [AAPL], duration", "symbols: AAPL, duration")))
+    with _pytest.raises(ConfigError, match="news.providers must be a list"):
+        load_config(write(("providers: [BRFG]", "providers: BRFG")))
+    # Quoted "false" used to pass through bool() as True; it now parses.
+    config = load_config(write(("use_rth: true", 'use_rth: "false"')))
+    assert config.prices.use_rth is False
+    with _pytest.raises(ConfigError, match="prices.use_rth"):
+        load_config(write(("use_rth: true", "use_rth: maybe")))
+    with _pytest.raises(ConfigError, match="ib.request_timeout_seconds"):
+        load_config(write(("client_id: 1}", "client_id: 1, request_timeout_seconds: -1}")))
+    with _pytest.raises(ConfigError, match="ib.connect_timeout_seconds"):
+        load_config(write(("client_id: 1}", "client_id: 1, connect_timeout_seconds: 0}")))
+    # Sane string booleans still parse rather than forcing YAML-native only.
+    config = load_config(write(("continue_on_error: true", 'continue_on_error: "false"')))
+    assert config.run.continue_on_error is False
