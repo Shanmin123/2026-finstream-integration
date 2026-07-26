@@ -585,7 +585,7 @@ def test_rejection_arriving_at_shutdown_is_not_erased(pipeline_config):
     assert sorted(quotes["value"]) == [150.0, 151.0]
 
 
-def test_truncated_news_walk_holds_the_checkpoint_and_reports_the_gap(pipeline_config, caplog):
+def test_truncated_news_walk_holds_the_checkpoint_and_reports_the_gap(pipeline_config):
     """Every walk anchors at "now", so when the page budget runs out with IB
     still flagging older unread headlines, NO checkpoint value makes the next
     default run reach deeper: advancing would skip the remainder forever and
@@ -613,14 +613,23 @@ def test_truncated_news_walk_holds_the_checkpoint_and_reports_the_gap(pipeline_c
     checkpoint.update_news("AAPL", "2025-01-01T08:00:00+00:00")
     client = TruncatedNewsClient()
     runner = make_runner(pipeline_config, client)
-    with caplog.at_level(logging.WARNING, logger="ibkr_pipeline"):
+    # A direct handler: the pipeline logger does not propagate once
+    # configure_logging has run anywhere in the session, so caplog would
+    # miss it.
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    pipeline_logger = logging.getLogger("ibkr_pipeline")
+    pipeline_logger.addHandler(handler)
+    try:
         runner.run_news()
+    finally:
+        pipeline_logger.removeHandler(handler)
     state = checkpoint.load()
     assert (
         state["news"]["AAPL"]["last_published_at_utc"]
         == "2025-01-01T08:00:00+00:00"
     ), "an uncovered interval must not advance the checkpoint"
     assert any(
-        "news_backlog_exceeds_page_budget" in record.message
-        for record in caplog.records
+        record.msg == "news_backlog_exceeds_page_budget" for record in records
     )

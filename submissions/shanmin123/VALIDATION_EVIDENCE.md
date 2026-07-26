@@ -29,8 +29,10 @@ Integrity checks over the full panel (not a sample):
 
 * `smoke-test`: connects, returns 7 daily bars and the 8 subscribed news
   providers.
-* `collect-prices` over the full universe: 673 requested, 658 collected,
-  0 failures after the share-class symbol mapping; 814,022 rows.
+* `collect-prices` over the full universe: 673 requested, 658 collected;
+  the 15 remaining are the delisted/renamed names documented in the README,
+  whose contract resolution fails with IB error 200 as expected. 0
+  unexpected failures after the share-class symbol mapping; 814,022 rows.
 * `stream-pipeline`: tick-driven flushes observed (12 ticks then 4 ticks in
   consecutive intervals, no writes during a quiet interval), clean shutdown.
 * Live recomputation cost on the 658-symbol panel: 0.11s for 2 moved symbols,
@@ -38,7 +40,7 @@ Integrity checks over the full panel (not a sample):
 
 ## Test suite
 
-114 tests green under the production contract (Python 3.8-compatible pins,
+117 tests green under the production contract (Python 3.8-compatible pins,
 pandas 1.3.5, numpy 1.22.4, pyarrow 12.0.1), and every source file compiles
 under Python 3.8.20. PySpark 3.5.1 + Java 17 reads a written partition of all
 seven final datasets (prices, news, indicators, alphas, quotes, and both live

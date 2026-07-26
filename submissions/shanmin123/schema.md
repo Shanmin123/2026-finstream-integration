@@ -65,7 +65,9 @@ IBKR historical news paginates BACKWARDS: `reqHistoricalNews` returns up to
 remain. The collector anchors each run at the current time and follows that
 flag page by page, re-anchoring at the oldest time received, until the
 checkpoint minus the configured overlap is reached — so a burst larger than one
-page between runs is not lost. The `(symbol, provider_code, article_id)` dedup
+page between runs is not lost. The walk is bounded by `news.max_pages` per
+run; a backlog beyond `limit x max_pages` holds the checkpoint, logs
+`news_backlog_exceeds_page_budget`, and needs the budget raised to cover it. The `(symbol, provider_code, article_id)` dedup
 absorbs the boundary article each next page re-returns. A deeper backfill is
 the same walk with an older stop time. Availability on the default free
 provider set lags: at the time of collection the newest AAPL headline from
@@ -158,8 +160,11 @@ DDL: `pipeline/db/init_postgres/ibkr_tables.sql`. All rows carry `source='ibkr'`
 For daily rows, `timestamp_ms` is UTC midnight of the trading date
 (`strptime("%Y-%m-%d")` with `tzinfo=UTC`) -- the same expression the
 platform's EODHD daily loader uses, so the `(ticker, timestamp_ms,
-interval)` conflict key genuinely matches across the two feeds. Tick and
-provisional rows use the tick's own UTC receipt time.
+interval)` conflict key genuinely matches across the two feeds. Quote
+ticks use the tick's own UTC receipt time; provisional indicator/alpha
+rows share the daily row's UTC-midnight `timestamp_ms` -- the same
+conflict key, which is what lets the end-of-day value replace them in
+place -- with `computed_at_utc` carrying the refresh time.
 
 | Table | Key | Conflict policy |
 | --- | --- | --- |

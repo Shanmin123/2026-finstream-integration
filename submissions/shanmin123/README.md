@@ -144,9 +144,12 @@ Both are `schedule=None` pending lab bring-up, and point at
 Deploying into the shared Airflow: the DAG tasks import this `pipeline` package,
 so copying the two DAG files alone is not enough — the package has to be
 importable by the workers. Either mount this submission directory and add it to
-`PYTHONPATH`, or `pip install .` from this directory into the worker image (packaging
-metadata is in `pyproject.toml`; the table DDL ships with the package, while the
-DAG files are copied into Airflow's own dags directory rather than installed). The worker also needs network access to a logged-in IB
+`PYTHONPATH`, or `pip install ".[postgres]"` from this directory into the worker image
+(packaging metadata is in `pyproject.toml`; the `postgres` extra brings
+psycopg2, which the DAGs' database-loading tasks import -- plain
+`pip install .` still produces every parquet dataset but those tasks would
+fail. The table DDL ships with the package, while the DAG files are copied
+into Airflow's own dags directory rather than installed). The worker also needs network access to a logged-in IB
 Gateway at `ib.host`/`ib.port`; the Gateway login itself is interactive and is
 not automated here.
 
@@ -216,7 +219,10 @@ On restart, prices request the missing daily window with a three-day overlap.
 News anchors each run at the current time (`reqHistoricalNews` returns the
 newest headlines at or before its anchor) and follows IB's `hasMore` flag
 backwards page by page until the checkpoint time minus the configured minute
-overlap is reached, so a burst larger than one page is not lost. Partition
+overlap is reached, so a burst larger than one page is not lost. Each run's
+walk is bounded by `news.max_pages`; a backlog beyond `limit x max_pages`
+holds the checkpoint in place, logs `news_backlog_exceeds_page_budget`, and
+needs that budget raised to cover it. Partition
 writes then deduplicate prices by `(symbol, event_date)` and news by
 `(symbol, provider_code, article_id)`.
 
@@ -245,10 +251,14 @@ Install development dependencies and run the Python 3.8 suite:
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python scripts/verify_environment.py
 python -m pytest -q
 python -m compileall -q pipeline tests
 ```
+
+`python scripts/verify_environment.py` validates a PLATFORM worker environment
+(Airflow 2.8.1, PySpark 3.5.1, Java 17, and the platform's exact pins). Run it
+on the worker image; in a local test venv it rightly reports the
+platform-only packages as missing.
 
 The Spark compatibility test starts a local PySpark 3.5.1 session and reads the
 generated final Parquet partitions. Java 17 must be active for that test.

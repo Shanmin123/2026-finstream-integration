@@ -50,13 +50,17 @@ def validate_environment(version_fn, python_version, java_version_output):
 
 
 def read_java_version():
-    completed = subprocess.run(
-        ["java", "-version"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["java", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        # No java on PATH is a finding for the report, not a crash before it.
+        return ""
     return completed.stdout
 
 

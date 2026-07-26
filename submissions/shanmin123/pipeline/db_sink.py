@@ -153,9 +153,10 @@ def get_active_tickers(connection_factory=get_connection):
     try:
         conn = connection_factory()
     except Exception as exc:
-        logger.warning("db_unavailable", extra={"dataset": "companies",
-                                                "symbol": "*", "rows": 0})
-        logger.debug("db_unavailable_detail: %s", exc)
+        # The reason must be visible at the configured level: an auth failure,
+        # bad DNS, and a stopped database all need different operator action.
+        logger.warning("db_unavailable: %s", exc, extra={"dataset": "companies",
+                                                         "symbol": "*", "rows": 0})
         return None
     try:
         with conn.cursor() as cur:
@@ -166,9 +167,8 @@ def get_active_tickers(connection_factory=get_connection):
     except Exception as exc:
         # A missing table or a permission error is the same situation as an
         # unreachable database: fall back to the configured universe.
-        logger.warning("db_query_failed", extra={"dataset": "companies",
-                                                 "symbol": "*", "rows": 0})
-        logger.debug("db_query_failed_detail: %s", exc)
+        logger.warning("db_query_failed: %s", exc, extra={"dataset": "companies",
+                                                          "symbol": "*", "rows": 0})
         return None
     finally:
         conn.close()

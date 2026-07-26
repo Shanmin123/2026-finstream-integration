@@ -21,3 +21,18 @@ def test_environment_validator_reports_every_version_mismatch():
     assert any("Python 3.8 required" in error for error in errors)
     assert any("Java 17 required" in error for error in errors)
     assert len(errors) == len(EXPECTED_PACKAGES) + 2
+
+
+def test_missing_java_is_reported_not_a_crash(monkeypatch):
+    import subprocess
+
+    from scripts.verify_environment import read_java_version, validate_environment
+
+    def no_java(*_args, **_kwargs):
+        raise FileNotFoundError("java")
+
+    monkeypatch.setattr(subprocess, "run", no_java)
+    output = read_java_version()
+    assert output == ""
+    errors = validate_environment(lambda _n: "0", (3, 8, 20), output)
+    assert any("Java" in error for error in errors)

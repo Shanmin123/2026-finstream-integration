@@ -45,7 +45,11 @@ def configure_logging(log_dir):
     file_handler.setFormatter(formatter)
 
     logger = logging.getLogger("ibkr_pipeline")
-    logger.handlers = []
+    # Close what is being replaced: repeat configuration (tests, embedded
+    # callers) would otherwise leak an open file handle per call.
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
     logger.setLevel(logging.INFO)
     logger.propagate = False
     logger.addHandler(stream_handler)

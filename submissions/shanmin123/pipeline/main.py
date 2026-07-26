@@ -63,10 +63,22 @@ def build_runner(config):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    config = load_config(args.config)
-    configure_logging(config.paths.log_dir)
+    try:
+        config = load_config(args.config)
+        configure_logging(config.paths.log_dir)
+        runner = build_runner(config)
+    except Exception as exc:
+        # Setup failures (missing config, unwritable log dir) get the same
+        # machine-readable stderr contract as command failures, not a
+        # traceback.
+        print(
+            json.dumps(
+                {"status": "failed", "error": str(exc), "type": type(exc).__name__}
+            ),
+            file=sys.stderr,
+        )
+        return 1
     logger = logging.getLogger("ibkr_pipeline")
-    runner = build_runner(config)
 
     commands = {
         "smoke-test": runner.smoke_test,
