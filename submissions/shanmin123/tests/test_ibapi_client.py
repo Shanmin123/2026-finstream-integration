@@ -426,3 +426,22 @@ def test_sentinel_ticks_are_rejected_not_recorded():
         ("last", 250.0),
         ("volume", 1000000.0),
     ]
+
+
+def test_late_error_after_cleanup_neither_raises_nor_recreates_state():
+    """error() runs on the socket reader thread; the caller's timeout cleanup
+    can pop the request in between. A late error for a finished request must
+    be dropped -- not KeyError inside the reader loop, not recreate the freed
+    entries as orphans. The lock in error()/_clean_request closes the
+    interleaved window by construction; this pins the end state."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    request_id = client._new_request()
+    client._clean_request(request_id)
+    client.error(request_id, 162, "late pacing violation")
+    assert client._events == {} and client._errors == {}
+
+
+def test_late_news_end_does_not_recreate_the_freed_has_more_entry():
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    client.historicalNewsEnd(4242, True)
+    assert client._news_has_more == {}

@@ -155,6 +155,11 @@ bar is collected. Partition path mirrors the daily datasets
 ## Platform PostgreSQL tables
 
 DDL: `pipeline/db/init_postgres/ibkr_tables.sql`. All rows carry `source='ibkr'`.
+For daily rows, `timestamp_ms` is UTC midnight of the trading date
+(`strptime("%Y-%m-%d")` with `tzinfo=UTC`) -- the same expression the
+platform's EODHD daily loader uses, so the `(ticker, timestamp_ms,
+interval)` conflict key genuinely matches across the two feeds. Tick and
+provisional rows use the tick's own UTC receipt time.
 
 | Table | Key | Conflict policy |
 | --- | --- | --- |

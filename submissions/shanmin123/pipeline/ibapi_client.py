@@ -131,9 +131,17 @@ class IBApiClient(EWrapper, EClient):
             return
 
         error = IBRequestError(reqId, errorCode, errorString)
-        if reqId in self._events:
-            self._errors[reqId] = error
-            self._events[reqId].set()
+        # Runs on the socket reader thread while _clean_request may be popping
+        # the same request from the caller thread. The snapshot and the error
+        # write happen under one lock: a two-step membership check would
+        # KeyError inside the reader loop when the pop lands in between, and
+        # writing after the pop would recreate the freed entry as an orphan.
+        with self._id_lock:
+            event = self._events.get(reqId)
+            if event is not None:
+                self._errors[reqId] = error
+        if event is not None:
+            event.set()
             return
 
         if reqId == -1:
@@ -362,8 +370,11 @@ class IBApiClient(EWrapper, EClient):
             bucket.append((time, providerCode, articleId, headline))
 
     def historicalNewsEnd(self, requestId, hasMore):
-        if requestId in self._news_has_more:
-            self._news_has_more[requestId] = bool(hasMore)
+        # Check-and-set under the lock: writing after the caller's timeout
+        # cleanup popped the entry would recreate it as an orphan.
+        with self._id_lock:
+            if requestId in self._news_has_more:
+                self._news_has_more[requestId] = bool(hasMore)
         self._finish_request(requestId)
 
     def _new_request(self):
@@ -386,8 +397,9 @@ class IBApiClient(EWrapper, EClient):
             raise error
 
     def _clean_request(self, request_id):
-        self._events.pop(request_id, None)
-        self._errors.pop(request_id, None)
+        with self._id_lock:
+            self._events.pop(request_id, None)
+            self._errors.pop(request_id, None)
 
     @staticmethod
     def _normalise_bar(symbol, contract, bar):
@@ -488,10 +500,14 @@ class IBApiClient(EWrapper, EClient):
         finally:
             # Drain BEFORE cancelling (stop_quote_stream drops the request
             # mapping, so later callbacks are discarded) and inside the finally,
-            # or an interrupted unbounded capture would return nothing.
+            # or an interrupted unbounded capture would return nothing. The
+            # post-cancel drain must run even if the cancel raises, or the
+            # ticks decoded in between would be stranded in the buffer.
             collected.extend(self.drain_ticks())
-            self.stop_quote_stream()
-            collected.extend(self.drain_ticks())
+            try:
+                self.stop_quote_stream()
+            finally:
+                collected.extend(self.drain_ticks())
         return collected
 
     _TICK_PRICE_FIELDS = {
