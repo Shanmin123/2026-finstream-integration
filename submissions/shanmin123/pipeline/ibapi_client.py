@@ -1,4 +1,6 @@
+import logging
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -47,6 +49,7 @@ class IBApiClient(EWrapper, EClient):
         self._connection_error = None
         self._closing = False
         self._network_thread = None
+        self._stale_network_thread = None
         self._id_lock = threading.Lock()
         self._next_id = 1000
 
@@ -68,6 +71,19 @@ class IBApiClient(EWrapper, EClient):
         self._stream_request_ids = []
 
     def connect(self):
+        # A reader thread from a previous session that outlived disconnect's
+        # bounded join must finish before a new one starts: its late
+        # callbacks (nextValidId) would otherwise be attributed to the new
+        # session and complete the handshake prematurely.
+        stale = self._stale_network_thread
+        if stale is not None and stale.is_alive():
+            stale.join(self.connect_timeout_seconds)
+            if stale.is_alive():
+                raise RuntimeError(
+                    "The previous IB reader thread is still running; refusing "
+                    "to reconnect over it."
+                )
+        self._stale_network_thread = None
         self._connected_event.clear()
         self._connection_error = None
         self._closing = False
@@ -109,6 +125,10 @@ class IBApiClient(EWrapper, EClient):
             and network_thread is not threading.current_thread()
         ):
             network_thread.join(timeout=2)
+            if network_thread.is_alive():
+                # Keep the handle: connect() must wait this thread out before
+                # starting a successor.
+                self._stale_network_thread = network_thread
 
     def nextValidId(self, orderId):
         with self._id_lock:
@@ -244,6 +264,11 @@ class IBApiClient(EWrapper, EClient):
         self._finish_request(reqId)
 
     def list_news_providers(self):
+        # reqNewsProviders carries no request id, so a response from a
+        # timed-out earlier call cannot be told apart from the current one.
+        # The provider set is static per account (it changes only with
+        # entitlements), so a late response carries the same content and is
+        # accepted rather than fenced with machinery the wire cannot support.
         self._providers = []
         self._providers_error = None
         self._providers_event.clear()
@@ -317,7 +342,11 @@ class IBApiClient(EWrapper, EClient):
             finally:
                 self._clean_request(request_id)
                 self._news.pop(request_id, None)
-                self._news_has_more.pop(request_id, None)
+                # Under the same lock historicalNewsEnd's check-and-set holds:
+                # an unlocked pop could land between its check and its write,
+                # which would recreate the entry as an orphan.
+                with self._id_lock:
+                    self._news_has_more.pop(request_id, None)
             fresh = []
             for row in raw:
                 # Article ids are provider-specific: the persisted identity is
@@ -464,9 +493,17 @@ class IBApiClient(EWrapper, EClient):
         return self._connection_error
 
     def stop_quote_stream(self):
-        for request_id in getattr(self, "_stream_request_ids", []):
+        request_ids = list(getattr(self, "_stream_request_ids", []))
+        for request_id in request_ids:
             self.cancelMktData(request_id)
-            self._stream_symbols.pop(request_id, None)
+        # One locked pass over the subscriptions (socket writes above stay
+        # outside the lock): after this, a tick still being decoded finds no
+        # symbol and is dropped inside _record_tick's own locked section, so
+        # nothing can append behind the caller's final drain.
+        with self._stream_lock:
+            for request_id in request_ids:
+                self._stream_symbols.pop(request_id, None)
+        for request_id in request_ids:
             self._clean_request(request_id)
         self._stream_request_ids = []
 
@@ -504,10 +541,21 @@ class IBApiClient(EWrapper, EClient):
             # post-cancel drain must run even if the cancel raises, or the
             # ticks decoded in between would be stranded in the buffer.
             collected.extend(self.drain_ticks())
+            # A rejection can land between the loop's last check and here, and
+            # stop_quote_stream erases per-request errors. The capture itself
+            # already succeeded, so it is reported as a warning with the data
+            # kept, not raised after the fact (which would discard the rows).
+            pending_error = None
+            if sys.exc_info()[1] is None:
+                pending_error = self.stream_error()
             try:
                 self.stop_quote_stream()
             finally:
                 collected.extend(self.drain_ticks())
+            if pending_error is not None:
+                logging.getLogger("ibkr_pipeline").warning(
+                    "stream_error_after_capture: %s", pending_error
+                )
         return collected
 
     _TICK_PRICE_FIELDS = {
@@ -531,8 +579,7 @@ class IBApiClient(EWrapper, EClient):
     _PRICE_FIELDS = frozenset({"last", "bid", "ask", "open", "close", "high", "low"})
 
     def _record_tick(self, request_id, field, value):
-        symbol = self._stream_symbols.get(request_id)
-        if symbol is None or field is None or value is None:
+        if field is None or value is None:
             return
         try:
             numeric = float(value)
@@ -548,7 +595,6 @@ class IBApiClient(EWrapper, EClient):
             return
         if field not in self._PRICE_FIELDS and numeric < 0:
             return
-        value = numeric
         received = datetime.now(timezone.utc)
         row = {
             "tick_time_utc": received.isoformat(),
@@ -556,11 +602,19 @@ class IBApiClient(EWrapper, EClient):
             # extended-hours tick received after UTC midnight still belongs to
             # the previous session, so the receipt date would misfile it.
             "session_date": session_date_of(received),
-            "symbol": symbol,
+            "symbol": None,
             "field": field,
-            "value": float(value),
+            "value": numeric,
         }
+        # Symbol lookup and append share one locked section with
+        # stop_quote_stream's unsubscription: looked up outside it, a tick
+        # decoded during shutdown could append AFTER the final drain and sit
+        # stranded in the buffer.
         with self._stream_lock:
+            symbol = self._stream_symbols.get(request_id)
+            if symbol is None:
+                return
+            row["symbol"] = symbol
             self._stream_rows.append(row)
 
     @staticmethod

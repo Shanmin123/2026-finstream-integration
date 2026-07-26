@@ -445,3 +445,81 @@ def test_late_news_end_does_not_recreate_the_freed_has_more_entry():
     client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
     client.historicalNewsEnd(4242, True)
     assert client._news_has_more == {}
+
+
+def test_ticks_after_unsubscription_are_dropped_not_stranded(monkeypatch):
+    """stop_quote_stream and _record_tick share one locked section: a tick
+    decoded during shutdown either lands before the final drain or is
+    dropped -- it can never append behind the drain and sit stranded for the
+    next stream."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    client._stream_symbols = {9001: "AAPL"}
+    client._stream_request_ids = [9001]
+    monkeypatch.setattr(client, "cancelMktData", lambda _r: None)
+    client.stop_quote_stream()
+    client.tickPrice(9001, 4, 250.0, None)
+    assert client.drain_ticks() == []
+
+
+def test_rejection_during_shutdown_is_logged_and_the_ticks_are_kept(monkeypatch):
+    """A rejection landing between the loop's last check and the shutdown used
+    to be erased by stop_quote_stream's cleanup; raising it instead would
+    discard the rows already captured. It is logged and the data returned."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+    monkeypatch.setattr(client, "cancelMktData", lambda _r: None)
+
+    def tick_error_interrupt(_seconds):
+        client.tickPrice(client._stream_request_ids[0], 4, 250.0, None)
+        client.error(client._stream_request_ids[0], 354, "not subscribed")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("pipeline.ibapi_client.time.sleep", tick_error_interrupt)
+    rows = client.stream_quotes(["AAPL"], 0)
+    assert [(r["symbol"], r["value"]) for r in rows] == [("AAPL", 250.0)]
+
+
+def test_connect_refuses_to_race_a_stale_reader_thread(monkeypatch):
+    """A reader thread that outlived disconnect's bounded join could deliver
+    its late nextValidId into the NEXT session and complete the handshake
+    prematurely; connect() must wait it out or refuse."""
+    import threading
+
+    client = IBApiClient(
+        "127.0.0.1", 4002, 31,
+        request_timeout_seconds=1, connect_timeout_seconds=0.2,
+    )
+    release = threading.Event()
+    stale = threading.Thread(target=release.wait, daemon=True)
+    stale.start()
+    client._stale_network_thread = stale
+    monkeypatch.setattr(EClient, "connect", lambda *_a, **_k: None)
+    monkeypatch.setattr(EClient, "disconnect", lambda _c: None)
+    try:
+        with pytest.raises(RuntimeError, match="reader thread"):
+            client.connect()
+    finally:
+        release.set()
+
+
+def test_connect_proceeds_once_the_previous_reader_finished(monkeypatch):
+    import threading
+
+    client = IBApiClient(
+        "127.0.0.1", 4002, 31,
+        request_timeout_seconds=1, connect_timeout_seconds=0.1,
+    )
+    finished = threading.Thread(target=lambda: None)
+    finished.start()
+    finished.join()
+    client._stale_network_thread = finished
+    monkeypatch.setattr(EClient, "connect", lambda *_a, **_k: None)
+    monkeypatch.setattr(EClient, "disconnect", lambda _c: None)
+    monkeypatch.setattr(client, "run", lambda: None)
+    # Past the stale-reader gate, the handshake itself times out (no Gateway
+    # here) -- which is the point: the gate did not block a clean reconnect.
+    with pytest.raises(TimeoutError, match="Timed out connecting"):
+        client.connect()
+    assert client._stale_network_thread is None

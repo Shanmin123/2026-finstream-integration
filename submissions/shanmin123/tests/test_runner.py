@@ -546,3 +546,39 @@ def test_disconnect_failure_alone_still_raises(pipeline_config):
     runner = make_runner(pipeline_config, FailingDisconnect())
     with pytest.raises(OSError, match="disconnect failed"):
         runner.run_prices()
+
+
+def test_rejection_arriving_at_shutdown_is_not_erased(pipeline_config):
+    """stop_quote_stream clears per-request errors, so a rejection landing
+    between the loop's last check and shutdown used to vanish and the run
+    read as a success. The shutdown now checks once more AFTER the first
+    drain (data already safe) and surfaces it."""
+
+    class LateRejectClient(FakeStreamClient):
+        def __init__(self, batches):
+            super().__init__(batches)
+            self.checks = 0
+
+        def stream_error(self):
+            self.checks += 1
+            if self.checks >= 2:
+                return RuntimeError("354 not subscribed")
+            return None
+
+    def interrupt(_seconds):
+        raise KeyboardInterrupt
+
+    storage = _stream_storage(pipeline_config)
+    client = LateRejectClient([[_aaa_tick(150.0)], [_aaa_tick(151.0, at="14:00:05")]])
+    runner = _stream_runner(pipeline_config, client, storage, sleep_fn=interrupt)
+    with pytest.raises(RuntimeError, match="354"):
+        runner.run_stream_pipeline()
+    assert client.stopped == 1
+    import pandas as pd
+
+    quotes = pd.concat(
+        [pd.read_parquet(p) for p in storage.final_dir.glob("quotes/**/*.parquet")],
+        ignore_index=True,
+    )
+    # Both drains ran before the error surfaced: nothing was lost to it.
+    assert sorted(quotes["value"]) == [150.0, 151.0]

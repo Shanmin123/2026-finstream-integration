@@ -449,8 +449,23 @@ class PipelineRunner:
                 # fails on the first drain must not strand the ticks the second
                 # one owns.
                 primary = sys.exc_info()[1]
+
+                def pending_stream_error():
+                    # A rejection landing between the loop's last check and
+                    # shutdown would otherwise be erased by stop_quote_stream's
+                    # request cleanup and the run would read as a success.
+                    # Checked AFTER the first drain so the data is already safe.
+                    error = getattr(self.client, "stream_error", lambda: None)()
+                    if error is not None and error is not primary:
+                        raise error
+
                 shutdown_errors = []
-                for step in (flush, self.client.stop_quote_stream, flush):
+                for step in (
+                    flush,
+                    pending_stream_error,
+                    self.client.stop_quote_stream,
+                    flush,
+                ):
                     try:
                         step()
                     except BaseException as exc:  # KeyboardInterrupt too: deferred, not dropped
