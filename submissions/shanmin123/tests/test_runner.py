@@ -59,7 +59,7 @@ class FakeClient:
                 "article_id": "article-1",
                 "headline": "Synthetic headline",
             }
-        ]
+        ], True
 
 
 def make_runner(config, client, storage=None):
@@ -582,3 +582,34 @@ def test_rejection_arriving_at_shutdown_is_not_erased(pipeline_config):
     )
     # Both drains ran before the error surfaced: nothing was lost to it.
     assert sorted(quotes["value"]) == [150.0, 151.0]
+
+
+def test_truncated_news_walk_checkpoints_the_oldest_not_the_newest(pipeline_config):
+    """If the page budget ran out with IB still flagging older unread
+    headlines, checkpointing the newest would skip them forever; the next
+    run must re-anchor at the oldest collected and keep digging."""
+
+    class TruncatedNewsClient(FakeClient):
+        def fetch_news_headlines(self, symbol, *_args, **_kwargs):
+            rows = [
+                {
+                    "published_at_utc": "2025-01-02T12:00:00+00:00",
+                    "symbol": symbol, "con_id": 1, "provider_code": "BRFG",
+                    "article_id": "new", "headline": "newest",
+                },
+                {
+                    "published_at_utc": "2025-01-02T09:00:00+00:00",
+                    "symbol": symbol, "con_id": 1, "provider_code": "BRFG",
+                    "article_id": "old", "headline": "oldest collected",
+                },
+            ]
+            return rows, False   # page budget spent, more remain below
+
+    client = TruncatedNewsClient()
+    runner = make_runner(pipeline_config, client)
+    runner.run_news()
+    state = CheckpointStore(pipeline_config.paths.checkpoint_file).load()
+    assert (
+        state["news"]["AAPL"]["last_published_at_utc"]
+        == "2025-01-02T09:00:00+00:00"
+    )

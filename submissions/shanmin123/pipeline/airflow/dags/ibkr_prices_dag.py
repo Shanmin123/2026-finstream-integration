@@ -149,10 +149,19 @@ def ibkr_prices():
         """
         from pipeline import db_sink
 
+        _config, runner = _build_runner()
+        if os.environ.get("IBKR_PRICE_LOAD_FULL", "").lower() == "true":
+            # Recovery lever: if a worker died between collecting and loading
+            # (parquet advanced, price_data did not), the watermark of the
+            # NEXT run no longer covers the stranded bars. Pushing the whole
+            # panel once is safe -- DO NOTHING absorbs every existing row.
+            prices = runner.storage.read_final_prices()
+            if prices.empty:
+                return 0
+            return db_sink.write_prices(prices.to_dict("records"))
         watermark = collected.get("earliest_event_date")
         if not watermark:
             return 0
-        _config, runner = _build_runner()
         prices = runner.storage.read_final_prices()
         if prices.empty:
             return 0

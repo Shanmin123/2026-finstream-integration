@@ -1,4 +1,4 @@
-from typing import List, Protocol
+from typing import List, Protocol, Tuple
 
 
 class IBDataClient(Protocol):
@@ -29,5 +29,5 @@ class IBDataClient(Protocol):
         limit: int,
         since_utc: str = None,
         max_pages: int = 5,
-    ) -> List[dict]:
+    ) -> Tuple[List[dict], bool]:
         ...

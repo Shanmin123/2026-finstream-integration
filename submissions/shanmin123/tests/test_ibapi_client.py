@@ -78,7 +78,7 @@ def test_ibapi_client_converts_news_callbacks_and_cleans_tags(monkeypatch):
 
     monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
 
-    rows = client.fetch_news_headlines(
+    rows, exhausted = client.fetch_news_headlines(
         "AAPL",
         ["BRFG"],
         "20250101 00:00:00",
@@ -144,7 +144,7 @@ def test_news_pagination_follows_has_more_and_stops_at_the_checkpoint(monkeypatc
 
     monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
 
-    rows = client.fetch_news_headlines(
+    rows, exhausted = client.fetch_news_headlines(
         "AAPL", ["BRFG", "DJNL"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 3,
         since_utc="2025-01-01T00:00:00+00:00",
     )
@@ -178,7 +178,7 @@ def test_pagination_advances_past_a_page_of_boundary_duplicates(monkeypatch):
             client.historicalNewsEnd(req_id, False)
 
     monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
-    rows = client.fetch_news_headlines(
+    rows, exhausted = client.fetch_news_headlines(
         "AAPL", ["BRFG"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 1,
         since_utc="2025-01-01T00:00:00+00:00",
     )
@@ -200,7 +200,7 @@ def test_news_pagination_stops_once_the_checkpoint_is_reached(monkeypatch):
         client.historicalNewsEnd(req_id, True)   # IB says more exist...
 
     monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
-    rows = client.fetch_news_headlines(
+    rows, exhausted = client.fetch_news_headlines(
         "AAPL", ["BRFG"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 2,
         since_utc="2025-01-02T11:30:00+00:00",  # ...but the checkpoint is newer
     )
@@ -523,3 +523,92 @@ def test_connect_proceeds_once_the_previous_reader_finished(monkeypatch):
     with pytest.raises(TimeoutError, match="Timed out connecting"):
         client.connect()
     assert client._stale_network_thread is None
+
+
+def test_truncated_walk_reports_not_exhausted(monkeypatch):
+    """When the page budget runs out with hasMore still flagged, the caller
+    must know: advancing its checkpoint past the oldest row would skip the
+    unread remainder forever."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(
+        client, "resolve_stock_contract", lambda _symbol: qualified_contract()
+    )
+    pages = {"n": 0}
+
+    def req_historical_news(req_id, *_args):
+        pages["n"] += 1
+        hour = 12 - pages["n"]
+        client.historicalNews(
+            req_id, "2025-01-02 %02d:00:00.0" % hour, "BRFG",
+            "a-%d" % pages["n"], "h",
+        )
+        client.historicalNewsEnd(req_id, True)   # always more
+
+    monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
+    rows, exhausted = client.fetch_news_headlines(
+        "AAPL", ["BRFG"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 1,
+        since_utc="2025-01-01T00:00:00+00:00", max_pages=2,
+    )
+    assert len(rows) == 2 and exhausted is False
+
+
+def test_connection_loss_wakes_pending_requests_immediately(monkeypatch):
+    """A request already waiting when the socket dies must fail with the
+    connection error at once, not sit out its full timeout for a response
+    that can never arrive."""
+    import time as _time
+
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=5)
+    monkeypatch.setattr(
+        client, "resolve_stock_contract", lambda _symbol: qualified_contract()
+    )
+
+    def req_then_drop(_req_id, *_args):
+        client.connectionClosed()
+
+    monkeypatch.setattr(client, "reqHistoricalData", req_then_drop)
+    monkeypatch.setattr(client, "cancelHistoricalData", lambda _r: None)
+    started = _time.time()
+    with pytest.raises(IBRequestError, match="1100"):
+        client.fetch_daily_bars("AAPL", "7 D")
+    assert _time.time() - started < 2, "must not wait out the 5s timeout"
+
+
+def test_failed_subscription_startup_cancels_the_half_built_set(monkeypatch):
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    resolved = {"n": 0}
+
+    def resolve(symbol):
+        resolved["n"] += 1
+        if resolved["n"] > 1:
+            raise IBRequestError(-1, 200, "ambiguous contract for " + symbol)
+        return qualified_contract()
+
+    monkeypatch.setattr(client, "resolve_stock_contract", resolve)
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+    cancels = []
+    monkeypatch.setattr(client, "cancelMktData", lambda rid: cancels.append(rid))
+
+    with pytest.raises(IBRequestError, match="200"):
+        client.start_quote_stream(["AAPL", "BAD"])
+    assert cancels, "the already-made subscription must be cancelled"
+    assert client._stream_request_ids == [] and client._stream_symbols == {}
+
+
+def test_rejection_during_the_cancel_itself_is_latched(monkeypatch):
+    """stop_quote_stream erases per-request errors; the latch keeps a
+    rejection that arrives during the cancels visible to the caller."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+
+    def reject_during_cancel(request_id):
+        client.error(request_id, 354, "not subscribed, reported during cancel")
+
+    monkeypatch.setattr(client, "cancelMktData", reject_during_cancel)
+    client.start_quote_stream(["AAPL"])
+    client.stop_quote_stream()
+    error = client.stream_error()
+    assert error is not None and error.error_code == 354

@@ -69,6 +69,10 @@ class IBApiClient(EWrapper, EClient):
         self._stream_rows = []
         self._stream_symbols = {}
         self._stream_request_ids = []
+        # A terminal stream error that must survive stop_quote_stream's
+        # request cleanup, or a rejection arriving during the cancel would be
+        # erased and the run would read as a success.
+        self._stream_error_latch = None
 
     def connect(self):
         # A reader thread from a previous session that outlived disconnect's
@@ -144,7 +148,19 @@ class IBApiClient(EWrapper, EClient):
             self._connection_error = IBRequestError(
                 -1, 1100, "IB Gateway connection closed while the client was running"
             )
+            # Requests already in flight would otherwise sit out their full
+            # timeout waiting for responses that can never arrive.
+            self._fail_all_pending(self._connection_error)
         self._connected_event.set()
+
+    def _fail_all_pending(self, error):
+        """Wake every in-flight request with the connection error."""
+        with self._id_lock:
+            pending = list(self._events.items())
+            for request_id, _event in pending:
+                self._errors.setdefault(request_id, error)
+        for _request_id, event in pending:
+            event.set()
 
     def error(self, reqId, errorCode, errorString, *args):
         if 2100 <= errorCode <= 2199:
@@ -161,6 +177,10 @@ class IBApiClient(EWrapper, EClient):
             if event is not None:
                 self._errors[reqId] = error
         if event is not None:
+            if reqId in self._stream_request_ids and self._stream_error_latch is None:
+                # Quote-subscription rejections would be erased by
+                # stop_quote_stream's cleanup; latch the first one.
+                self._stream_error_latch = error
             event.set()
             return
 
@@ -170,6 +190,7 @@ class IBApiClient(EWrapper, EClient):
             if errorCode in (502, 504, 1100):
                 self._connection_error = error
                 self._connected_event.set()
+                self._fail_all_pending(error)
 
     def resolve_stock_contract(self, symbol):
         # SMART/USD alone is ambiguous for some tickers (IB error 200), in which
@@ -310,6 +331,11 @@ class IBApiClient(EWrapper, EClient):
         checkpoint) is reached, or ``max_pages`` is hit. The inclusive anchor
         re-returns the boundary article, so already-seen article ids are
         skipped.
+
+        Returns ``(rows, exhausted)``. ``exhausted`` is False when the page
+        budget ran out with IB still flagging older unread headlines -- the
+        caller must then NOT advance its checkpoint past the oldest row
+        returned, or the unread remainder would be skipped forever.
         """
         contract = self.resolve_stock_contract(symbol)
         stop_at = None
@@ -321,6 +347,7 @@ class IBApiClient(EWrapper, EClient):
                 stop_at = stop_at.replace(tzinfo=timezone.utc)
         collected = []
         seen_ids = set()
+        exhausted = True
         page_start, page_end = start, end
         for _page in range(max(1, int(max_pages))):
             request_id = self._new_request()
@@ -391,7 +418,11 @@ class IBApiClient(EWrapper, EClient):
                 break
             # Same both-bounds anchoring that the first page uses.
             page_start = page_end = oldest.strftime("%Y-%m-%d %H:%M:%S.0")
-        return collected
+        else:
+            # The page budget ran out while IB still flagged older unread
+            # headlines: the walk is incomplete.
+            exhausted = False
+        return collected, exhausted
 
     def historicalNews(self, requestId, time, providerCode, articleId, headline):
         bucket = self._news.get(requestId)
@@ -460,14 +491,22 @@ class IBApiClient(EWrapper, EClient):
         self.reqMarketDataType(market_data_type)
         with self._stream_lock:
             self._stream_rows = []
-        self._stream_symbols = {}
+            self._stream_symbols = {}
         self._stream_request_ids = []
+        self._stream_error_latch = None
         for symbol in symbols:
-            contract = self.resolve_stock_contract(symbol)
-            request_id = self._new_request()
-            self._stream_symbols[request_id] = symbol
-            self._stream_request_ids.append(request_id)
-            self.reqMktData(request_id, contract, "", False, False, [])
+            try:
+                contract = self.resolve_stock_contract(symbol)
+                request_id = self._new_request()
+                with self._stream_lock:
+                    self._stream_symbols[request_id] = symbol
+                self._stream_request_ids.append(request_id)
+                self.reqMktData(request_id, contract, "", False, False, [])
+            except BaseException:
+                # A half-built subscription set must not leak: the server
+                # would keep streaming into requests nobody will drain.
+                self.stop_quote_stream()
+                raise
         return list(self._stream_request_ids)
 
     def drain_ticks(self):
@@ -484,8 +523,11 @@ class IBApiClient(EWrapper, EClient):
         subscribed) are reported against the subscription's request id, and a
         dropped Gateway session (1100/502/504) is reported globally. Neither
         would otherwise stop a run, which would then report success having
-        collected nothing.
+        collected nothing. The latch keeps a rejection visible after
+        stop_quote_stream has cleaned the per-request state away.
         """
+        if self._stream_error_latch is not None:
+            return self._stream_error_latch
         for request_id in getattr(self, "_stream_request_ids", []):
             error = self._errors.get(request_id)
             if error is not None:
@@ -503,6 +545,14 @@ class IBApiClient(EWrapper, EClient):
         with self._stream_lock:
             for request_id in request_ids:
                 self._stream_symbols.pop(request_id, None)
+        # Latch any rejection that arrived up to and during the cancels before
+        # the cleanup below erases the per-request record of it.
+        if self._stream_error_latch is None:
+            for request_id in request_ids:
+                error = self._errors.get(request_id)
+                if error is not None:
+                    self._stream_error_latch = error
+                    break
         for request_id in request_ids:
             self._clean_request(request_id)
         self._stream_request_ids = []
@@ -511,7 +561,10 @@ class IBApiClient(EWrapper, EClient):
         """Collect ticks for a fixed window (batch wrapper over the stream primitives).
 
         ``duration_seconds`` of 0 means unbounded, matching the streaming
-        pipeline, and the poll never sleeps past a bounded deadline.
+        pipeline, and the poll never sleeps past a bounded deadline. The
+        batch shape holds every tick in memory until it returns, so long
+        unbounded captures belong to ``stream-pipeline``, which flushes to
+        parquet at the flush interval instead.
         """
         self.start_quote_stream(symbols, market_data_type=market_data_type)
         collected = []
@@ -552,6 +605,10 @@ class IBApiClient(EWrapper, EClient):
                 self.stop_quote_stream()
             finally:
                 collected.extend(self.drain_ticks())
+            if pending_error is None and sys.exc_info()[1] is None:
+                # The latch keeps a rejection that landed during the cancels
+                # visible past stop_quote_stream's cleanup.
+                pending_error = self.stream_error()
             if pending_error is not None:
                 logging.getLogger("ibkr_pipeline").warning(
                     "stream_error_after_capture: %s", pending_error

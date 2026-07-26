@@ -220,6 +220,18 @@ overlap is reached, so a burst larger than one page is not lost. Partition
 writes then deduplicate prices by `(symbol, event_date)` and news by
 `(symbol, provider_code, article_id)`.
 
+## Recovery
+
+If an Airflow worker dies between collecting and database-loading (parquet
+advanced, `price_data` did not), the next run's watermark no longer covers the
+stranded bars. Set `IBKR_PRICE_LOAD_FULL=true` for one run of `ibkr_prices` to
+push the whole panel; the platform's DO NOTHING conflict policy absorbs every
+row already present.
+
+`stream-quotes` is a batch capture and holds every tick in memory until it
+returns; long unbounded runs (`duration_seconds: 0`) belong to
+`stream-pipeline`, which flushes to parquet at the flush interval.
+
 ## Validation evidence
 
 Delivered dataset integrity, live-Gateway verification, measured latencies and the

@@ -56,7 +56,7 @@ class PipelineRunner:
                 start = self._format_ib_time(
                     now - timedelta(days=self.config.news.lookback_days)
                 )
-                headlines = self._with_retries(
+                headlines, _exhausted = self._with_retries(
                     "smoke_news",
                     symbol,
                     lambda: self.client.fetch_news_headlines(
@@ -188,7 +188,7 @@ class PipelineRunner:
                 "since_utc": seen_after.isoformat(),
             }
             try:
-                rows = self._with_retries(
+                rows, feed_exhausted = self._with_retries(
                     "collect_news",
                     symbol,
                     lambda symbol=symbol, request=request: (
@@ -210,7 +210,16 @@ class PipelineRunner:
                     self._run_id("news", symbol, retrieved_at),
                 )
                 if rows:
-                    last_time = max(row["published_at_utc"] for row in rows)
+                    if feed_exhausted:
+                        last_time = max(row["published_at_utc"] for row in rows)
+                    else:
+                        # The walk hit its page budget with IB still flagging
+                        # older unread headlines. Advancing to the newest
+                        # would skip that remainder forever; re-anchoring at
+                        # the oldest collected makes the next run walk down
+                        # to it again and keep digging (the article dedup
+                        # absorbs the overlap).
+                        last_time = min(row["published_at_utc"] for row in rows)
                     fresh = sum(
                         1
                         for row in rows
@@ -456,15 +465,21 @@ class PipelineRunner:
                     # request cleanup and the run would read as a success.
                     # Checked AFTER the first drain so the data is already safe.
                     error = getattr(self.client, "stream_error", lambda: None)()
-                    if error is not None and error is not primary:
-                        raise error
+                    if error is None or error is primary:
+                        return
+                    if any(error is seen for seen in shutdown_errors):
+                        return  # the earlier check already recorded this one
+                    raise error
 
                 shutdown_errors = []
+                # The second pending_stream_error sees the client's latch, so
+                # a rejection landing during the cancel itself still surfaces.
                 for step in (
                     flush,
                     pending_stream_error,
                     self.client.stop_quote_stream,
                     flush,
+                    pending_stream_error,
                 ):
                     try:
                         step()
