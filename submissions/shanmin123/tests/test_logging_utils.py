@@ -47,3 +47,4 @@ def test_reconfiguration_closes_the_replaced_file_handler(tmp_path):
             logger.removeHandler(handler)
             handler.close()
         logger.propagate = True
+        logger.setLevel(logging.NOTSET)
