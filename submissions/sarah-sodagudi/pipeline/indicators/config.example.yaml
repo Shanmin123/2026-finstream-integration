@@ -1,0 +1,64 @@
+# Copy this file to config.yaml and fill in real values.
+# config.yaml is gitignored -- never commit real credentials.
+# Secrets (API token, DB password) do NOT go here -- see .env.example.
+
+api:
+  base_url: "https://eodhd.com/api/technical"
+  max_retries: 5
+  backoff_seconds: 2
+  http_timeout_seconds: 30
+
+# Read-only connection to the shared PostgreSQL instance hosting
+# price_data (populated by the platform's own price-ingestion pipeline)
+# and companies (active S&P 500 ticker universe). This pipeline never
+# writes to Postgres -- price_data is a read-only source table here.
+postgres:
+  host: "localhost"
+  port: 5433
+  database: "financial_data"
+  price_table: "price_data"
+  companies_table: "companies"
+
+# Where indicators get written. No auth configured here since the target
+# MongoDB instance runs without auth in local/dev use -- add user/password
+# fields (sourced from .env, same pattern as postgres) if your target
+# instance requires it.
+mongo:
+  host: "localhost"
+  port: 27017
+  database: "financial_db"
+  collection: "technical_indicators"
+
+# EODHD Technical Indicator API vendor cross-check (additive: adds
+# <LocalColumn>_eodhd fields alongside local values, never modifies or
+# replaces them -- see technical_comparison.py).
+vendor:
+  # Only functions confirmed (via diagnose_vendor_vs_local_indicators.py
+  # against real data) to agree well with the local calculation --
+  # see ../../technical_indicators_data_report.md for the evidence.
+  # "ALL" pulls every function this client knows about, validated or not.
+  functions: "sma,bbands,macd"
+  # Cap on distinct tickers that get a vendor fetch per run (local
+  # computation for every ticker is unaffected). Each ticker costs a real
+  # EODHD credit per enabled function (confirmed empirically: 5 credits
+  # per technical-indicator call, not 1) -- 0 = no limit. 20 is a
+  # deliberate standing safety default, not just a testing convenience --
+  # see README.md's cost table before raising it.
+  ticker_limit: 20
+  # How far back each vendor fetch reaches via EODHD's from/to params.
+  # Without a bound, EODHD returns a ticker's ENTIRE available history
+  # (40+ years) on every call -- confirmed the hard way during development.
+  lookback_days: 120
+
+# Trailing lookback window read from price_data per interval, wide enough
+# to guarantee a full 50-period rolling window even across weekends/
+# holidays. Both Spark and pandas stages need this trailing history to
+# compute correctly for the newest bars -- only rows newer than the
+# MongoDB watermark (see mongo_writer.py) actually get pushed afterwards.
+lookback_days:
+  "1d": 90
+  "5m": 5
+
+run:
+  # Which price_data intervals to process each run.
+  intervals: ["1d", "5m"]

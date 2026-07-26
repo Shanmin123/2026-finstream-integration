@@ -1,0 +1,19 @@
+# Never commit real credentials or local config
+**/config.yaml
+**/.env
+*.pem
+*.key
+
+# Local run artifacts -- not source, always regenerable
+**/data/
+**/*.checkpoint.json
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# OS/editor
+.DS_Store
+.vscode/

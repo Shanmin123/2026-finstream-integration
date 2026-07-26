@@ -1,0 +1,30 @@
+{
+  "ticker": "AAPL",
+  "exchange": "US",
+  "year": 2023,
+  "quarter": null,
+  "publish_date": "2023-09-30",
+  "report_type": "10-K",
+  "metrics": {
+    "income_totalRevenue": 383285000000,
+    "income_costOfRevenue": 214137000000,
+    "income_grossProfit": 169148000000,
+    "income_researchDevelopment": 29915000000,
+    "income_operatingIncome": 114301000000,
+    "income_ebitda": 125820000000,
+    "income_netIncome": 96995000000,
+    "balance_totalAssets": 352583000000,
+    "balance_totalCurrentAssets": 143566000000,
+    "balance_totalLiab": 290437000000,
+    "balance_totalStockholderEquity": 62146000000,
+    "balance_cashAndEquivalents": 29965000000,
+    "cashflow_totalCashFromOperatingActivities": 110543000000,
+    "cashflow_capitalExpenditures": -10959000000,
+    "cashflow_freeCashFlow": 99584000000,
+    "eps_actual": 1.46
+  },
+  "metadata": {
+    "source": "eodhd",
+    "processed_at": "2026-07-22T00:43:38.000Z"
+  }
+}
