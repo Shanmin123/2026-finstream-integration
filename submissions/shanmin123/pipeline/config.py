@@ -121,11 +121,19 @@ def resolve_universe(platform_tickers, configured):
     """
     if platform_tickers is None:
         return tuple(configured)
-    return tuple(
-        canonical_symbol(ticker)
-        for ticker in platform_tickers
-        if str(ticker).strip()
-    )
+    seen = set()
+    cleaned = []
+    for ticker in platform_tickers:
+        if not str(ticker).strip():
+            continue
+        canonical = canonical_symbol(ticker)
+        # Aliases of one instrument (BRK.B / BRK-B) canonicalize to the same
+        # form; requesting it twice would double the IB traffic for nothing.
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        cleaned.append(canonical)
+    return tuple(cleaned)
 
 
 def _canonical_symbols(values):

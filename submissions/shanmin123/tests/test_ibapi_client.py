@@ -131,6 +131,9 @@ def test_news_pagination_follows_has_more_and_stops_at_the_checkpoint(monkeypatc
         anchors.append((start, end))
         if len(anchors) == 1:
             client.historicalNews(req_id, "2025-01-02 12:00:00.0", "BRFG", "a-3", "h3")
+            # Article ids are provider-specific: a shared id from another
+            # provider is a different article and must survive the dedup.
+            client.historicalNews(req_id, "2025-01-02 12:00:00.0", "DJNL", "a-3", "h3-dj")
             client.historicalNews(req_id, "2025-01-02 11:00:00.0", "BRFG", "a-2", "h2")
             client.historicalNewsEnd(req_id, True)
         else:
@@ -142,13 +145,45 @@ def test_news_pagination_follows_has_more_and_stops_at_the_checkpoint(monkeypatc
     monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
 
     rows = client.fetch_news_headlines(
-        "AAPL", ["BRFG"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 2,
+        "AAPL", ["BRFG", "DJNL"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 3,
         since_utc="2025-01-01T00:00:00+00:00",
     )
-    assert [row["article_id"] for row in rows] == ["a-3", "a-2", "a-1"]
+    assert [(row["provider_code"], row["article_id"]) for row in rows] == [
+        ("BRFG", "a-3"), ("DJNL", "a-3"), ("BRFG", "a-2"), ("BRFG", "a-1"),
+    ]
     # Page 2 re-anchors both bounds at the oldest time of page 1.
     assert anchors[1] == ("2025-01-02 11:00:00.0", "2025-01-02 11:00:00.0")
     assert client._news == {} and client._news_has_more == {}
+
+
+def test_pagination_advances_past_a_page_of_boundary_duplicates(monkeypatch):
+    """With a small page size the next page can consist ENTIRELY of the
+    boundary article already seen. Stopping there would silently lose
+    everything older; the walk must step one second past the boundary."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(
+        client, "resolve_stock_contract", lambda _symbol: qualified_contract()
+    )
+    anchors = []
+
+    def req_historical_news(req_id, _con_id, _codes, start, _end, _limit, _opts):
+        anchors.append(start)
+        if len(anchors) <= 2:
+            # Page 1 and the page anchored at its own time both return only
+            # the boundary article (limit=1).
+            client.historicalNews(req_id, "2025-01-02 12:00:00.0", "BRFG", "a-2", "h2")
+            client.historicalNewsEnd(req_id, True)
+        else:
+            client.historicalNews(req_id, "2025-01-02 11:00:00.0", "BRFG", "a-1", "h1")
+            client.historicalNewsEnd(req_id, False)
+
+    monkeypatch.setattr(client, "reqHistoricalNews", req_historical_news)
+    rows = client.fetch_news_headlines(
+        "AAPL", ["BRFG"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0", 1,
+        since_utc="2025-01-01T00:00:00+00:00",
+    )
+    assert [row["article_id"] for row in rows] == ["a-2", "a-1"]
+    assert anchors[2] == "2025-01-02 11:59:59.0"
 
 
 def test_news_pagination_stops_once_the_checkpoint_is_reached(monkeypatch):

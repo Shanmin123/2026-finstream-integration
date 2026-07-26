@@ -1,7 +1,7 @@
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ibapi.client import EClient
 from ibapi.contract import Contract
@@ -312,9 +312,14 @@ class IBApiClient(EWrapper, EClient):
                 self._news_has_more.pop(request_id, None)
             fresh = []
             for row in raw:
-                if row[2] in seen_ids:
+                # Article ids are provider-specific: the persisted identity is
+                # (symbol, provider_code, article_id), so the in-walk dedup
+                # must match it or a shared id would drop another provider's
+                # article.
+                key = (row[1], row[2])
+                if key in seen_ids:
                     continue
-                seen_ids.add(row[2])
+                seen_ids.add(key)
                 fresh.append(
                     {
                         "published_at_utc": self._parse_news_time(row[0]),
@@ -326,11 +331,25 @@ class IBApiClient(EWrapper, EClient):
                     }
                 )
             collected.extend(fresh)
-            if not has_more or not fresh:
+            if not has_more:
                 break
-            oldest = min(
-                datetime.fromisoformat(item["published_at_utc"]) for item in fresh
-            )
+            if fresh:
+                oldest = min(
+                    datetime.fromisoformat(item["published_at_utc"])
+                    for item in fresh
+                )
+            elif raw:
+                # The whole page was boundary duplicates (possible when the
+                # page size is small): step one second past them so the walk
+                # still progresses instead of stalling and losing everything
+                # older. Older articles inside that same second are the cost
+                # of the anchor's second precision.
+                oldest = min(
+                    datetime.fromisoformat(self._parse_news_time(row[0]))
+                    for row in raw
+                ) - timedelta(seconds=1)
+            else:
+                break
             if stop_at is not None and oldest <= stop_at:
                 break
             # Same both-bounds anchoring that the first page uses.

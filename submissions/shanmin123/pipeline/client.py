@@ -27,5 +27,7 @@ class IBDataClient(Protocol):
         start: str,
         end: str,
         limit: int,
+        since_utc: str = None,
+        max_pages: int = 5,
     ) -> List[dict]:
         ...

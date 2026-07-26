@@ -153,3 +153,5 @@ def test_resolve_universe_distinguishes_unreachable_from_empty():
     assert resolve_universe(None, configured) == ("AAPL", "MSFT")
     assert resolve_universe([], configured) == ()
     assert resolve_universe(["brk.b", " ", "aapl"], configured) == ("BRK-B", "AAPL")
+    # Aliases of one instrument collapse to a single request.
+    assert resolve_universe(["BRK.B", "BRK-B"], configured) == ("BRK-B",)

@@ -515,3 +515,34 @@ def test_stream_failure_is_not_replaced_by_a_shutdown_failure(pipeline_config):
     with pytest.raises(RuntimeError, match="stream died"):
         runner.run_stream_pipeline(sink=sink)
     assert client.stopped == 1
+
+
+def test_disconnect_failure_does_not_replace_the_run_error(pipeline_config):
+    """The outer disconnect is the last cleanup to run; if it also fails, the
+    stream's own error must still be the one the caller sees."""
+
+    class DeadStreamFailingDisconnect(FakeStreamClient):
+        def stream_error(self):
+            return RuntimeError("stream died")
+
+        def disconnect(self):
+            super().disconnect()
+            raise OSError("disconnect failed")
+
+    storage = _stream_storage(pipeline_config)
+    client = DeadStreamFailingDisconnect([])
+    runner = _stream_runner(pipeline_config, client, storage)
+    with pytest.raises(RuntimeError, match="stream died"):
+        runner.run_stream_pipeline()
+    assert client.disconnect_count == 1
+
+
+def test_disconnect_failure_alone_still_raises(pipeline_config):
+    class FailingDisconnect(FakeClient):
+        def disconnect(self):
+            super().disconnect()
+            raise OSError("disconnect failed")
+
+    runner = make_runner(pipeline_config, FailingDisconnect())
+    with pytest.raises(OSError, match="disconnect failed"):
+        runner.run_prices()

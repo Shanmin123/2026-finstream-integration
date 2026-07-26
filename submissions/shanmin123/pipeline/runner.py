@@ -83,8 +83,17 @@ class PipelineRunner:
             self.logger.info("gateway_connected")
             return operation()
         finally:
-            self.client.disconnect()
-            self.logger.info("gateway_disconnected")
+            # With an operation error already propagating, a disconnect
+            # failure is secondary: log it and keep the real error primary.
+            primary = sys.exc_info()[1]
+            try:
+                self.client.disconnect()
+            except BaseException as exc:
+                if primary is None:
+                    raise
+                self.logger.error("gateway_disconnect_failed", exc_info=exc)
+            else:
+                self.logger.info("gateway_disconnected")
 
     def _collect_prices(self):
         # earliest_event_date is the low-water mark of what this run
