@@ -181,16 +181,16 @@ class IBApiClient(EWrapper, EClient):
             event = self._events.get(reqId)
             if event is not None:
                 self._errors[reqId] = error
-                if (
-                    reqId in self._stream_request_ids
-                    and self._stream_error_latch is None
-                ):
-                    # Quote-subscription rejections would be erased by
-                    # stop_quote_stream's cleanup; latch the first, atomically
-                    # with the record that cleanup races against.
-                    self._stream_error_latch = error
+            # Latch while the subscription list is still populated, even if
+            # the request's event was already cleaned: a rejection landing
+            # inside stop_quote_stream's cleanup window must stay visible.
+            is_stream = reqId in self._stream_request_ids
+            if is_stream and self._stream_error_latch is None:
+                self._stream_error_latch = error
         if event is not None:
             event.set()
+            return
+        if is_stream:
             return
 
         if reqId == -1:
@@ -274,8 +274,14 @@ class IBApiClient(EWrapper, EClient):
             except TimeoutError:
                 # The request is still live on the Gateway: cancel it so the
                 # retry does not stack a second identical request on top of it
-                # (pacing pressure) and so its late bars go nowhere.
-                self.cancelHistoricalData(request_id)
+                # (pacing pressure) and so its late bars go nowhere. A cancel
+                # failure must not replace the timeout as the caller's error.
+                try:
+                    self.cancelHistoricalData(request_id)
+                except Exception:
+                    logging.getLogger("ibkr_pipeline").warning(
+                        "historical_cancel_failed", exc_info=True
+                    )
                 raise
             return [
                 self._normalise_bar(symbol, contract, bar)
@@ -411,6 +417,14 @@ class IBApiClient(EWrapper, EClient):
                 # still progresses instead of stalling and losing everything
                 # older. Older articles inside that same second are the cost
                 # of the anchor's second precision.
+                if len(raw) >= limit:
+                    # A FULL page of duplicates means more articles can share
+                    # this exact second than one page holds; the step cannot
+                    # split a second, so unseen ones are skipped. A larger
+                    # news.limit is the only mitigation.
+                    logging.getLogger("ibkr_pipeline").warning(
+                        "news_same_second_burst_may_skip_articles"
+                    )
                 oldest = min(
                     datetime.fromisoformat(self._parse_news_time(row[0]))
                     for row in raw
@@ -614,12 +628,25 @@ class IBApiClient(EWrapper, EClient):
             # already succeeded, so it is reported as a warning with the data
             # kept, not raised after the fact (which would discard the rows).
             pending_error = None
-            if sys.exc_info()[1] is None:
+            primary = sys.exc_info()[1]
+            if primary is None:
                 pending_error = self.stream_error()
+            stop_error = None
             try:
                 self.stop_quote_stream()
+            except BaseException as exc:
+                # Must not replace the capture's own failure; surfaced below
+                # on the clean path once the final drain has run.
+                stop_error = exc
             finally:
                 collected.extend(self.drain_ticks())
+            if stop_error is not None:
+                if primary is not None:
+                    logging.getLogger("ibkr_pipeline").warning(
+                        "stream_stop_failed", exc_info=stop_error
+                    )
+                else:
+                    raise stop_error
             if pending_error is None and sys.exc_info()[1] is None:
                 # The latch keeps a rejection that landed during the cancels
                 # visible past stop_quote_stream's cleanup.

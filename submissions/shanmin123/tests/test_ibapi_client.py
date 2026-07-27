@@ -655,3 +655,46 @@ def test_cancel_failure_does_not_abandon_the_remaining_cleanup(monkeypatch):
         client.stop_quote_stream()
     assert len(attempted) == 2, "the second cancel must still be attempted"
     assert client._stream_request_ids == [] and client._stream_symbols == {}
+
+
+def test_rejection_landing_inside_the_cleanup_window_is_still_latched():
+    """After _clean_request removed the event but before the subscription
+    list is cleared, an arriving rejection must still latch: this is exactly
+    stop_quote_stream's cleanup window."""
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    client._stream_request_ids = [9001]          # stop not finished yet
+    client.error(9001, 354, "arrived mid-cleanup")   # no event registered
+    error = client.stream_error()
+    assert error is not None and error.error_code == 354
+
+
+def test_cancel_failure_does_not_mask_the_capture_rejection(monkeypatch):
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+    monkeypatch.setattr(client, "reqMarketDataType", lambda _t: None)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqMktData", lambda *_a, **_k: None)
+
+    def failing_cancel(_request_id):
+        raise OSError("cancel socket write failed")
+
+    monkeypatch.setattr(client, "cancelMktData", failing_cancel)
+
+    def reject(_seconds):
+        client.error(client._stream_request_ids[0], 354, "not subscribed")
+
+    monkeypatch.setattr("pipeline.ibapi_client.time.sleep", reject)
+    with pytest.raises(IBRequestError, match="354"):
+        client.stream_quotes(["AAPL"], 5)
+
+
+def test_timeout_survives_a_failing_cancel(monkeypatch):
+    client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=0.05)
+    monkeypatch.setattr(client, "resolve_stock_contract", lambda _s: qualified_contract())
+    monkeypatch.setattr(client, "reqHistoricalData", lambda *_a: None)
+
+    def failing_cancel(_request_id):
+        raise OSError("dead socket")
+
+    monkeypatch.setattr(client, "cancelHistoricalData", failing_cancel)
+    with pytest.raises(TimeoutError):
+        client.fetch_daily_bars("AAPL", "7 D")

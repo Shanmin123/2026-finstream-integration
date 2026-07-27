@@ -254,3 +254,31 @@ def test_insert_count_is_not_taken_from_rowcount_across_pages(monkeypatch):
         raising=False,
     )
     assert write_prices(rows, connection_factory=lambda: Conn([])) == 250
+
+
+def test_close_failure_does_not_cancel_the_fallback_or_the_result():
+    """conn.close() raising in a finally used to replace get_active_tickers'
+    return -- turning the designed fallback into a pipeline failure."""
+    from pipeline import db_sink
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, _sql):
+            return None
+
+        def fetchall(self):
+            return [("AAPL",), ("MSFT",)]
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            raise OSError("close failed")
+
+    assert db_sink.get_active_tickers(connection_factory=Conn) == ["AAPL", "MSFT"]

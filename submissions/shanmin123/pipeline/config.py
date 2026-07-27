@@ -1,6 +1,7 @@
 import csv
 import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -179,6 +180,8 @@ def _canonical_symbols(values):
     seen = set()
     symbols = []
     for value in values or []:
+        if value is None:
+            continue  # a null YAML entry is not the ticker "NONE"
         symbol = canonical_symbol(value)
         if symbol and symbol not in seen:
             symbols.append(symbol)
@@ -208,10 +211,40 @@ def _load_symbols(section, base_dir, fallback=None):
     return symbols
 
 
+def _int_field(value, field_name, minimum):
+    """Whole numbers only: int() would silently truncate 1.9 to 1."""
+    if isinstance(value, float) and not value.is_integer():
+        raise ConfigError("%s must be a whole number" % field_name)
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ConfigError("%s must be a whole number" % field_name)
+    if number < minimum:
+        raise ConfigError("%s must be at least %d" % (field_name, minimum))
+    return number
+
+
 def _positive_int(value, field_name):
-    number = int(value)
-    if number <= 0:
-        raise ConfigError("%s must be greater than zero" % field_name)
+    return _int_field(value, field_name, 1)
+
+
+def _finite_nonneg(value, name):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ConfigError("%s must be a number" % name)
+    if not math.isfinite(number) or number < 0:
+        raise ConfigError("%s must be a finite non-negative number" % name)
+    return number
+
+
+def _market_data_type(value):
+    number = _int_field(value, "stream.market_data_type", 1)
+    if number not in (1, 2, 3, 4):
+        raise ConfigError(
+            "stream.market_data_type must be 1 (real time), 2 (frozen), "
+            "3 (delayed) or 4 (delayed frozen)"
+        )
     return number
 
 
@@ -241,10 +274,16 @@ def load_config(path):
     if not providers:
         raise ConfigError("news.providers must contain at least one provider code")
 
+    port = int(os.getenv("IB_PORT", str(ib_data.get("port", 4002))))
+    if not 1 <= port <= 65535:
+        raise ConfigError("ib.port must be a valid TCP port")
+    client_id = int(os.getenv("IB_CLIENT_ID", str(ib_data.get("client_id", 31))))
+    if client_id < 0:
+        raise ConfigError("ib.client_id must be non-negative")
     ib = IBConfig(
         host=os.getenv("IB_HOST", str(ib_data.get("host", "127.0.0.1"))),
-        port=int(os.getenv("IB_PORT", str(ib_data.get("port", 4002)))),
-        client_id=int(os.getenv("IB_CLIENT_ID", str(ib_data.get("client_id", 31)))),
+        port=port,
+        client_id=client_id,
         connect_timeout_seconds=_require_positive(
             ib_data.get("connect_timeout_seconds", 10),
             "ib.connect_timeout_seconds",
@@ -271,16 +310,23 @@ def load_config(path):
         ),
         log_dir=_resolve_path(base_dir, paths_data.get("log_dir"), "paths.log_dir"),
     )
+    duration = str(prices_data.get("duration", "5 Y")).strip()
+    if not re.fullmatch(r"\d+ [SDWMY]", duration):
+        raise ConfigError(
+            "prices.duration must be an IB duration like '5 Y' or '30 D'"
+        )
     prices = PricesConfig(
         symbols=price_symbols,
-        duration=str(prices_data.get("duration", "5 Y")),
+        duration=duration,
         use_rth=_as_bool(prices_data.get("use_rth", True), "prices.use_rth"),
     )
     news = NewsConfig(
         symbols=news_symbols,
         providers=providers,
         lookback_days=_positive_int(news_data.get("lookback_days", 1), "lookback_days"),
-        overlap_minutes=max(int(news_data.get("overlap_minutes", 5)), 0),
+        overlap_minutes=_int_field(
+            news_data.get("overlap_minutes", 5), "news.overlap_minutes", 0
+        ),
         limit=_positive_int(news_data.get("limit", 100), "news.limit"),
         # The per-run page budget for the backwards walk. When a backlog
         # exceeds limit*max_pages the run reports the gap and holds its
@@ -289,12 +335,14 @@ def load_config(path):
     )
     run = RunConfig(
         max_retries=_positive_int(run_data.get("max_retries", 3), "max_retries"),
-        retry_delay_seconds=max(float(run_data.get("retry_delay_seconds", 2)), 0.0),
+        retry_delay_seconds=_finite_nonneg(
+            run_data.get("retry_delay_seconds", 2), "run.retry_delay_seconds"
+        ),
         continue_on_error=_as_bool(
             run_data.get("continue_on_error", True), "run.continue_on_error"
         ),
-        symbol_delay_seconds=max(
-            float(run_data.get("symbol_delay_seconds", 1.0)), 0.0
+        symbol_delay_seconds=_finite_nonneg(
+            run_data.get("symbol_delay_seconds", 1.0), "run.symbol_delay_seconds"
         ),
     )
     stream_data = data.get("stream") or {}
@@ -324,7 +372,9 @@ def load_config(path):
     stream = StreamConfig(
         symbols=stream_symbols,
         duration_seconds=stream_duration,
-        market_data_type=int(stream_data.get("market_data_type", 3)),
+        market_data_type=_market_data_type(
+            stream_data.get("market_data_type", 3)
+        ),
         flush_interval_seconds=_finite_positive(
             stream_data.get("flush_interval_seconds", 5.0),
             "stream.flush_interval_seconds",

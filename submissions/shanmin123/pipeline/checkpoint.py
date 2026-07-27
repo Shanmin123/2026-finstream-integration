@@ -81,17 +81,20 @@ class CheckpointStore:
         os.replace(str(temporary), str(self.path))
 
     def update_price(self, symbol, last_event_date):
-        with self._exclusive():
-            state = self.load()
-            state["prices"][str(symbol).upper()] = {
-                "last_event_date": str(last_event_date)
-            }
-            self._save(state)
+        self._advance("prices", "last_event_date", symbol, last_event_date)
 
     def update_news(self, symbol, last_published_at_utc):
+        self._advance("news", "last_published_at_utc", symbol, last_published_at_utc)
+
+    def _advance(self, section, field, symbol, value):
+        """Watermarks only move forward: a slower writer finishing after a
+        faster one must not regress what is already durably recorded."""
         with self._exclusive():
             state = self.load()
-            state["news"][str(symbol).upper()] = {
-                "last_published_at_utc": str(last_published_at_utc)
-            }
+            key = str(symbol).upper()
+            value = str(value)
+            current = state[section].get(key, {}).get(field)
+            if current is not None and value <= current:
+                return
+            state[section][key] = {field: value}
             self._save(state)

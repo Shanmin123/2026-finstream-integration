@@ -74,3 +74,20 @@ def test_checkpoint_rejects_non_mapping_sections(tmp_path):
     path.write_text('{"prices": [], "news": {}}', encoding="utf-8")
     with pytest.raises(ValueError, match="prices"):
         CheckpointStore(path).load()
+
+
+def test_watermarks_only_advance(tmp_path):
+    """A slower run finishing after a faster one must not regress the
+    durable watermark; overlap re-fetches would silently repeat forever."""
+    from pipeline.checkpoint import CheckpointStore
+
+    store = CheckpointStore(tmp_path / "cp.json")
+    store.update_price("AAPL", "2025-01-03")
+    store.update_price("AAPL", "2025-01-02")     # late, slower writer
+    assert store.load()["prices"]["AAPL"]["last_event_date"] == "2025-01-03"
+    store.update_news("AAPL", "2025-01-03T12:00:00+00:00")
+    store.update_news("AAPL", "2025-01-02T09:00:00+00:00")
+    assert (
+        store.load()["news"]["AAPL"]["last_published_at_utc"]
+        == "2025-01-03T12:00:00+00:00"
+    )

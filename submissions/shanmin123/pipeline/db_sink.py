@@ -64,6 +64,15 @@ def price_rows_to_platform(rows):
     return mapped
 
 
+def _close_quietly(conn):
+    # A close failure must not replace the query's own result or error --
+    # get_active_tickers' fallback and a committed write both survive it.
+    try:
+        conn.close()
+    except Exception:
+        logger.warning("db_close_failed", exc_info=True)
+
+
 def get_connection():
     import psycopg2
 
@@ -127,7 +136,7 @@ def record_run(dag_id, records, latency_seconds, status, error=None,
             )
         conn.commit()
     finally:
-        conn.close()
+        _close_quietly(conn)
 
 
 def get_active_tickers(connection_factory=get_connection):
@@ -157,7 +166,7 @@ def get_active_tickers(connection_factory=get_connection):
                                                           "symbol": "*", "rows": 0})
         return None
     finally:
-        conn.close()
+        _close_quietly(conn)
 
 
 _NON_VALUE_COLUMNS = {
@@ -245,7 +254,7 @@ def _execute(sql, mapped, connection_factory):
             written = len(returned or [])
         conn.commit()
     finally:
-        conn.close()
+        _close_quietly(conn)
     return written
 
 

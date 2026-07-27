@@ -210,3 +210,28 @@ def test_news_max_pages_is_configurable_and_validated(tmp_path):
     path = _write(tmp_path, lambda b: b["news"].update(max_pages=0), name="c0.yaml")
     with _pytest.raises(ConfigError, match="news.max_pages"):
         load_config(path)
+
+
+def test_out_of_range_and_non_integral_values_are_rejected(tmp_path):
+    import math
+
+    import pytest as _pytest
+
+    from pipeline.config import ConfigError, load_config
+
+    cases = [
+        (lambda b: b["ib"].update(port=70000), "ib.port"),
+        (lambda b: b["ib"].update(client_id=-1), "ib.client_id"),
+        (lambda b: b["prices"].update(duration="5Q"), "prices.duration"),
+        (lambda b: b["stream"].update(market_data_type=99), "stream.market_data_type"),
+        (lambda b: b["run"].update(retry_delay_seconds=math.nan), "run.retry_delay_seconds"),
+        (lambda b: b["run"].update(max_retries=1.9), "max_retries"),
+    ]
+    for index, (mutate, field) in enumerate(cases):
+        path = _write(tmp_path, mutate, name="bad%d.yaml" % index)
+        with _pytest.raises(ConfigError, match=field.replace(".", r"\.")):
+            load_config(path)
+    # A null YAML symbol entry is dropped, never the ticker "NONE".
+    path = _write(tmp_path, lambda b: b["stream"].update(symbols=[None, "AAPL"]),
+                  name="nullsym.yaml")
+    assert load_config(path).stream.symbols == ("AAPL",)

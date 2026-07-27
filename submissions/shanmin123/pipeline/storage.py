@@ -56,11 +56,17 @@ def _atomic_parquet(frame, path):
 
 
 def _merge_partition(path, incoming, keys, order_column):
+    # One writer per dataset at a time (the DAGs serialise; concurrent CLI
+    # writers to the same dataset are unsupported -- last snapshot would win).
     if path.exists():
         existing = pd.read_parquet(path)
         combined = pd.concat([existing, incoming], ignore_index=True, sort=False)
     else:
         combined = incoming.copy()
+    # Sort by order_column first so the NEWEST version wins the dedup even
+    # when an older write is replayed after it; the stable sort keeps the
+    # incoming row on ties, preserving same-stamp overwrite semantics.
+    combined = combined.sort_values(order_column, kind="stable")
     combined = combined.drop_duplicates(subset=list(keys), keep="last")
     combined = combined.sort_values(list(keys) + [order_column]).reset_index(drop=True)
     _atomic_parquet(combined, path)

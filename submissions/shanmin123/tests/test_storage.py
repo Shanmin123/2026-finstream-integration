@@ -249,3 +249,19 @@ def test_latest_year_only_opens_only_newest_year_files(tmp_path, monkeypatch):
     newest = storage.read_final_dataset("indicators", latest_year_only=True)
     assert list(newest["event_date"]) == ["2026-07-24"]
     assert opened and all("event_year=2026" in path for path in opened)
+
+
+def test_replayed_older_write_does_not_clobber_the_newer_value(tmp_path):
+    """Dedup must key on order_column, not arrival order: an at-least-once
+    replay of an older batch used to overwrite the newer merged value."""
+    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
+    row = {
+        "event_date": "2025-01-02", "symbol": "AAPL", "con_id": 1,
+        "exchange": "SMART", "currency": "USD", "open": 1.0, "high": 1.0,
+        "low": 1.0, "close": 111.0, "volume": 1.0, "bar_count": 1, "wap": 1.0,
+    }
+    storage.write_prices([row], {}, "2025-01-03T02:00:00+00:00", "newer")
+    stale = dict(row, close=99.0)
+    storage.write_prices([stale], {}, "2025-01-03T01:00:00+00:00", "replay")
+    final = storage.read_final_prices()
+    assert list(final["close"]) == [111.0]

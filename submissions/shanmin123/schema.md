@@ -62,7 +62,11 @@ Article body text is not part of this schema.
 
 IBKR historical news paginates BACKWARDS: `reqHistoricalNews` returns up to
 `limit` headlines at or before its anchor and flags `hasMore` when older ones
-remain. The collector anchors each run at the current time and follows that
+remain. Identity is `(symbol, provider_code, article_id)`; the final layer
+partitions by publication date, so a provider-corrected timestamp that
+crosses midnight can leave the superseded row in the prior date
+partition -- consumers wanting identity-unique news should deduplicate
+on those three columns keeping the newest `retrieved_at_utc`. The collector anchors each run at the current time and follows that
 flag page by page, re-anchoring at the oldest time received, until the
 checkpoint minus the configured overlap is reached — so a burst larger than one
 page between runs is not lost. The walk is bounded by `news.max_pages` per

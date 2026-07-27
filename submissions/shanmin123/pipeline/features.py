@@ -291,6 +291,12 @@ def compute_live_features(prices, bars_by_symbol, as_of_utc):
     panel = pd.concat(extended, ignore_index=True)
     indicators = compute_indicators(panel, as_of_utc)
     alphas = compute_alphas(panel, as_of_utc)
+    # alpha_20 ranks cross-sectionally over the whole universe; a flush's
+    # moved-only microbatch is not that universe, so its live value is wrong
+    # by construction (a lone mover ranks against itself). The daily run is
+    # its only honest source; the provisional row carries NaN, which both
+    # sinks already skip.
+    alphas["alpha_20"] = np.nan
     live_i = indicators.sort_values("event_date").groupby("symbol", sort=True).tail(1)
     live_a = alphas.sort_values("event_date").groupby("symbol", sort=True).tail(1)
     live_i = live_i.copy()

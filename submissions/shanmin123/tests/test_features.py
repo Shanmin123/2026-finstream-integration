@@ -382,3 +382,27 @@ def test_flat_series_rsi_is_undefined_not_maximum_strength():
         series(pd.Series(100.0 - np.arange(n))), COMPUTED_AT
     )
     assert falling["rsi_14"].dropna().iloc[-1] == pytest.approx(0.0)
+
+
+def test_live_alpha_20_is_nan_because_the_microbatch_is_not_the_universe():
+    """alpha_20 ranks cross-sectionally; ranking a lone mover against itself
+    produced -1.0 instead of its true cross-sectional value. The provisional
+    row must carry NaN and leave alpha_20 to the daily run."""
+    import numpy as np
+    import pandas as pd
+
+    from pipeline.features import compute_alphas, compute_live_features
+
+    dates = pd.date_range("2026-01-02", periods=40, freq="B").strftime("%Y-%m-%d")
+    prices = pd.DataFrame([
+        {"event_date": d, "symbol": s, "open": 100.0 + i, "high": 101.0 + i,
+         "low": 99.0 + i, "close": 100.5 + i, "volume": 1000.0 + i}
+        for s in ("AAA", "BBB") for i, d in enumerate(dates)
+    ])
+    bars = {"AAA": {"event_date": "2026-07-25", "close": 150.0, "open": 149.0,
+                    "high": 151.0, "low": 148.0, "volume": 500.0}}
+    _live_i, live_a = compute_live_features(prices, bars, "2026-07-25T14:00:00+00:00")
+    assert len(live_a) == 1
+    assert np.isnan(live_a["alpha_20"].iloc[0])
+    daily = compute_alphas(prices, "2026-07-25T00:00:00+00:00")
+    assert daily["alpha_20"].notna().any(), "the daily run remains the source"
