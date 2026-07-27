@@ -121,6 +121,10 @@ class LayeredStorage:
             frame["event_date"], errors="raise"
         ).dt.strftime("%Y-%m-%d")
         frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+        # The published Spark schema says double; ibapi 9.81 delivers int
+        # volumes and 10.x Decimals, and letting the input dtype through
+        # would mix physical parquet schemas across partitions.
+        frame["volume"] = frame["volume"].astype("float64")
         frame["retrieved_at_utc"] = _iso_utc(retrieved_at_utc)
         for column in PRICE_COLUMNS:
             if column not in frame.columns:

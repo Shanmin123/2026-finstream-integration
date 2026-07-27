@@ -40,7 +40,7 @@ Integrity checks over the full panel (not a sample):
 
 ## Test suite
 
-125 tests green under the production contract (Python 3.8-compatible pins,
+129 tests green under the production contract (Python 3.8-compatible pins,
 pandas 1.3.5, numpy 1.22.4, pyarrow 12.0.1), and every source file compiles
 under Python 3.8.20. PySpark 3.5.1 + Java 17 reads a written partition of all
 seven final datasets (prices, news, indicators, alphas, quotes, and both live

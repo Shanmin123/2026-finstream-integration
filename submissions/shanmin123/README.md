@@ -219,7 +219,10 @@ On restart, prices request the missing daily window with a three-day overlap.
 News anchors each run at the current time (`reqHistoricalNews` returns the
 newest headlines at or before its anchor) and follows IB's `hasMore` flag
 backwards page by page until the checkpoint time minus the configured minute
-overlap is reached, so a burst larger than one page is not lost. Each run's
+overlap is reached, so a burst larger than one page is not lost -- with one
+second-precision edge: more articles sharing one exact second than
+`news.limit` holds cannot all be seen, and the run logs
+`news_same_second_burst_may_skip_articles`. Each run's
 walk is bounded by `news.max_pages`; a backlog beyond `limit x max_pages`
 holds the checkpoint in place, logs `news_backlog_exceeds_page_budget`, and
 needs that budget raised to cover it. Partition

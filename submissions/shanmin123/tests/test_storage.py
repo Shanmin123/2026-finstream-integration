@@ -265,3 +265,35 @@ def test_replayed_older_write_does_not_clobber_the_newer_value(tmp_path):
     storage.write_prices([stale], {}, "2025-01-03T01:00:00+00:00", "replay")
     final = storage.read_final_prices()
     assert list(final["close"]) == [111.0]
+
+
+def test_equal_order_stamp_ties_keep_the_incoming_row(tmp_path):
+    """Same retrieved_at on both sides: the incoming write must win the tie,
+    preserving the correct-a-bad-value-now overwrite path."""
+    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
+    row = {
+        "event_date": "2025-01-02", "symbol": "AAPL", "con_id": 1,
+        "exchange": "SMART", "currency": "USD", "open": 1.0, "high": 1.0,
+        "low": 1.0, "close": 100.0, "volume": 1.0, "bar_count": 1, "wap": 1.0,
+    }
+    stamp = "2025-01-03T00:00:00+00:00"
+    storage.write_prices([row], {}, stamp, "first")
+    storage.write_prices([dict(row, close=101.0)], {}, stamp, "second")
+    assert list(storage.read_final_prices()["close"]) == [101.0]
+
+
+def test_price_volume_is_stored_as_double(tmp_path):
+    """The published Spark schema says double; ibapi 9.81 delivers int
+    volumes and 10.x Decimals, and mixed physical schemas across partitions
+    would break a schema-applying reader."""
+    storage = LayeredStorage(tmp_path / "raw", tmp_path / "mid", tmp_path / "final")
+    row = {
+        "event_date": "2025-01-02", "symbol": "AAPL", "con_id": 1,
+        "exchange": "SMART", "currency": "USD", "open": 1.0, "high": 1.0,
+        "low": 1.0, "close": 100.0, "volume": 1000, "bar_count": 1, "wap": 1.0,
+    }
+    result = storage.write_prices([row], {}, "2025-01-03T00:00:00+00:00", "r")
+    import pyarrow.parquet as pq
+
+    schema = pq.read_schema(result.final_paths[0])
+    assert str(schema.field("volume").type) == "double"

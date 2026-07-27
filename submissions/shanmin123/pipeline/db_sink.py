@@ -27,7 +27,7 @@ indicators or alpha formulas need no migration.
 import logging
 import math
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("ibkr_pipeline")
 
@@ -125,6 +125,7 @@ def record_run(dag_id, records, latency_seconds, status, error=None,
     try:
         with conn.cursor() as cur:
             now = datetime.now(timezone.utc)
+            start = now - timedelta(seconds=max(float(latency_seconds), 0.0))
             cur.execute(
                 """
                 INSERT INTO pipeline_runs
@@ -132,7 +133,7 @@ def record_run(dag_id, records, latency_seconds, status, error=None,
                      latency_seconds, status, error_message)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (dag_id, now, now, records, latency_seconds, status, error),
+                (dag_id, start, now, records, latency_seconds, status, error),
             )
         conn.commit()
     finally:

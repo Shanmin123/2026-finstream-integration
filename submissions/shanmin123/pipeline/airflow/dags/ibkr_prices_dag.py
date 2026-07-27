@@ -68,6 +68,9 @@ def _build_runner():
     start_date=pendulum.datetime(2026, 7, 1, tz="UTC"),
     schedule=None,
     catchup=False,
+    # The parquet layer is single-writer per dataset (see storage.py); a
+    # second concurrent run could snapshot-merge away the first one's rows.
+    max_active_runs=1,
     tags=["ibkr", "prices", "alpha"],
 )
 def ibkr_prices():
@@ -92,18 +95,7 @@ def ibkr_prices():
             )
             logger.info("universe from platform: %d tickers", len(symbols))
         summary = runner.run_prices()
-        try:
-            db_sink.record_run(
-                DAG_ID,
-                summary["written"],
-                time.time() - started,
-                "success" if not summary["errors"] else "partial",
-                None if not summary["errors"] else str(summary["errors"][:3]),
-            )
-        except Exception:
-            # The database is optional: run telemetry must not fail a
-            # collection that already produced its parquet datasets.
-            logger.warning("pipeline_runs telemetry unavailable", exc_info=True)
+        summary["started_epoch"] = started
         return summary
 
     @task
@@ -140,10 +132,11 @@ def ibkr_prices():
     def load_price_data_to_postgres(collected: dict, _features: dict) -> int:
         """Upsert the bars this run actually collected into price_data.
 
-        The collector reports the earliest event_date it fetched, so a
-        backfill pushes the whole history (a gap filler must offer every bar)
-        while a daily increment pushes only the few overlap days it
-        re-requested. Pushing one panel-wide max date instead would load a
+        The watermark is the PANEL-WIDE earliest event_date this run
+        fetched: a daily increment pushes only the few overlap days, while a
+        single symbol's deep backfill re-offers the whole panel from that
+        date (DO NOTHING absorbs the overlap; the cost is transport, not
+        correctness). Pushing one panel-wide max date instead would load a
         single session on a backfill and would skip a suspended ticker whose
         newest bar predates the panel maximum.
         """
@@ -168,9 +161,33 @@ def ibkr_prices():
         rows = prices[prices["event_date"] >= watermark].to_dict("records")
         return db_sink.write_prices(rows)
 
+    @task
+    def record_telemetry(collected: dict, _features_loaded: dict) -> None:
+        """One pipeline_runs row per fully successful chain.
+
+        Recorded LAST so a load failure cannot leave a success row behind;
+        a failed run leaves no row, matching the collection-failure case.
+        """
+        from pipeline import db_sink
+
+        try:
+            db_sink.record_run(
+                DAG_ID,
+                collected["written"],
+                time.time() - collected["started_epoch"],
+                "success" if not collected["errors"] else "partial",
+                None if not collected["errors"] else str(collected["errors"][:3]),
+            )
+        except Exception:
+            # The database is optional: telemetry must not fail a run whose
+            # datasets already landed.
+            logger.warning("pipeline_runs telemetry unavailable", exc_info=True)
+
     collected = collect_prices()
     features = compute_features(collected)
-    load_features_to_postgres(load_price_data_to_postgres(collected, features))
+    record_telemetry(
+        collected, load_features_to_postgres(load_price_data_to_postgres(collected, features))
+    )
 
 
 ibkr_prices()

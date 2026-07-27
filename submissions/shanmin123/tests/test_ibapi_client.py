@@ -698,3 +698,44 @@ def test_timeout_survives_a_failing_cancel(monkeypatch):
     monkeypatch.setattr(client, "cancelHistoricalData", failing_cancel)
     with pytest.raises(TimeoutError):
         client.fetch_daily_bars("AAPL", "7 D")
+
+
+def test_same_second_saturation_warns_but_sub_limit_pages_do_not(monkeypatch):
+    """A FULL page of boundary duplicates can hide same-second articles the
+    one-second step skips; a sub-limit duplicate page cannot, so it steps
+    silently."""
+    import logging
+
+    def run(limit):
+        client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
+        monkeypatch.setattr(
+            client, "resolve_stock_contract", lambda _s: qualified_contract()
+        )
+        pages = {"n": 0}
+
+        def req(req_id, *_args):
+            pages["n"] += 1
+            if pages["n"] <= 2:
+                client.historicalNews(req_id, "2025-01-02 12:00:00.0", "BRFG", "a-2", "h")
+                client.historicalNewsEnd(req_id, True)
+            else:
+                client.historicalNews(req_id, "2025-01-02 11:00:00.0", "BRFG", "a-1", "h")
+                client.historicalNewsEnd(req_id, False)
+
+        monkeypatch.setattr(client, "reqHistoricalNews", req)
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logger = logging.getLogger("ibkr_pipeline")
+        logger.addHandler(handler)
+        try:
+            client.fetch_news_headlines(
+                "AAPL", ["BRFG"], "2025-01-03 00:00:00.0", "2025-01-03 00:00:00.0",
+                limit, since_utc="2025-01-01T00:00:00+00:00",
+            )
+        finally:
+            logger.removeHandler(handler)
+        return [r.msg for r in records]
+
+    assert any("same_second" in m for m in run(limit=1))
+    assert not any("same_second" in m for m in run(limit=5))

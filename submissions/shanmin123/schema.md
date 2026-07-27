@@ -68,7 +68,9 @@ crosses midnight can leave the superseded row in the prior date
 partition -- consumers wanting identity-unique news should deduplicate
 on those three columns keeping the newest `retrieved_at_utc`. The collector anchors each run at the current time and follows that
 flag page by page, re-anchoring at the oldest time received, until the
-checkpoint minus the configured overlap is reached — so a burst larger than one
+checkpoint minus the configured overlap is reached (second-precision
+edge: a same-second burst larger than `news.limit` cannot be fully seen and
+is warned about) — so a burst larger than one
 page between runs is not lost. The walk is bounded by `news.max_pages` per
 run; a backlog beyond `limit x max_pages` holds the checkpoint, logs
 `news_backlog_exceeds_page_budget`, and needs the budget raised to cover it. The `(symbol, provider_code, article_id)` dedup
@@ -147,7 +149,7 @@ streams real time (`stream.market_data_type: 1`).
 
 ## Live Feature Parquet (provisional intraday)
 
-`indicators_live` and `alphas_live` carry the same columns as the daily datasets
+`indicators_live` and `alphas_live` carry the same columns as the daily datasets (provisional `alpha_20` is always null: its cross-sectional rank needs the full universe, which a moved-symbols microbatch is not -- the daily dataset supplies it)
 plus `as_of_utc` (refresh time) and `provisional` (always true). Each row is the
 latest intraday value: the streamed `last` price becomes the provisional close
 and the daily formulas are recomputed. Fields the stream has not reported

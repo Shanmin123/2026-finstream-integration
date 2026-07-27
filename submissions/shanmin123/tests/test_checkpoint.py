@@ -28,7 +28,7 @@ def test_checkpoint_recovers_from_an_empty_file(tmp_path):
 
 
 def test_concurrent_price_and_news_updates_do_not_lose_each_other(tmp_path):
-    """collect-prices and collect-news can run as separate processes against
+    """collect-prices and collect-news can run as separate writers (threads here; the OS file lock is the same mechanism) against
     one checkpoint file. Unlocked read-modify-write lost one side's update and
     the shared .tmp name raced os.replace into FileNotFoundError."""
     import threading

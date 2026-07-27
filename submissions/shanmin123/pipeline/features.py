@@ -262,7 +262,10 @@ def compute_live_features(prices, bars_by_symbol, as_of_utc):
     values come out NaN, which is the honest "not yet known".
 
     Returns only the provisional last row per symbol, tagged ``provisional``.
-    Values converge to the final ones once the real daily bar replaces them.
+    Values converge to the final ones once the real daily bar replaces them,
+    except ``alpha_20``: its cross-sectional rank cannot be computed from a
+    moved-only microbatch, so the provisional row carries NaN and the daily
+    run supplies the value.
     """
     data = _prepare(prices)
     extended = []
