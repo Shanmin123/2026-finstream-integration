@@ -71,7 +71,6 @@ class PipelineConfig:
     news: NewsConfig
     run: RunConfig
     stream: StreamConfig
-    config_path: Path
 
 
 def _section(data, name):
@@ -339,5 +338,4 @@ def load_config(path):
         prices=prices,
         news=news,
         run=run,
-        config_path=config_path,
     )

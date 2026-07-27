@@ -278,22 +278,6 @@ class LayeredStorage:
                 bars[symbol] = bar
         return bars
 
-    def read_latest_quote_last(self):
-        """Latest streamed `last` tick per symbol -> {symbol: (value, event_date)}."""
-        root = self.final_dir / "quotes"
-        paths = sorted(root.glob("event_date=*/symbol=*/part-000.parquet"))
-        if not paths:
-            return {}
-        frame = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
-        frame = frame[frame["field"] == "last"]
-        if frame.empty:
-            return {}
-        frame = frame.sort_values("tick_time_utc").groupby("symbol").tail(1)
-        return {
-            row["symbol"]: (float(row["value"]), str(row["tick_time_utc"])[:10])
-            for _, row in frame.iterrows()
-        }
-
     def write_derived(self, dataset, frame, key_columns, order_column):
         """Write a derived (recomputable) dataset to the final layer only.
 

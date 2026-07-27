@@ -14,7 +14,6 @@ No look-ahead: every value at row t uses only rows <= t of the same input
 import numpy as np
 import pandas as pd
 
-PRICE_INPUT_COLUMNS = ("symbol", "event_date", "open", "high", "low", "close", "volume")
 
 INDICATOR_COLUMNS = (
     "symbol",

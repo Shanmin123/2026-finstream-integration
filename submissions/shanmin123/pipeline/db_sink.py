@@ -82,32 +82,18 @@ def write_prices(rows, connection_factory=get_connection):
     mapped = price_rows_to_platform(rows)
     if not mapped:
         return 0
-    from psycopg2.extras import execute_values
-
-    conn = connection_factory()
-    inserted = 0
-    try:
-        with conn.cursor() as cur:
-            # execute_values pages the batch and psycopg2 documents that
-            # cursor.rowcount does NOT hold the total afterwards, so the count
-            # comes from RETURNING rows gathered across every page.
-            returned = execute_values(
-                cur,
-                """
-                INSERT INTO price_data
-                    (ticker, timestamp_ms, datetime_utc, open, high, low,
-                     close, volume, interval, source)
-                VALUES %s
-                ON CONFLICT (ticker, timestamp_ms, interval) DO NOTHING
-                RETURNING 1
-                """,
-                mapped,
-                fetch=True,
-            )
-            inserted = len(returned or [])
-        conn.commit()
-    finally:
-        conn.close()
+    inserted = _execute(
+        """
+        INSERT INTO price_data
+            (ticker, timestamp_ms, datetime_utc, open, high, low,
+             close, volume, interval, source)
+        VALUES %s
+        ON CONFLICT (ticker, timestamp_ms, interval) DO NOTHING
+        RETURNING 1
+        """,
+        mapped,
+        connection_factory,
+    )
     logger.info(
         "db_write_complete",
         extra={"dataset": "price_data", "symbol": "*", "rows": inserted},
@@ -173,11 +159,6 @@ def get_active_tickers(connection_factory=get_connection):
     finally:
         conn.close()
 
-
-# ---------------------------------------------------------------------------
-# Streamed quotes and the derived long-format datasets (see
-# db/init_postgres/ibkr_tables.sql for the DDL these match).
-# ---------------------------------------------------------------------------
 
 _NON_VALUE_COLUMNS = {
     "symbol", "event_date", "computed_at_utc", "as_of_utc", "provisional",

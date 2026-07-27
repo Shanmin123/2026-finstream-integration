@@ -138,9 +138,6 @@ class PipelineRunner:
                 if rows:
                     last_date = max(row["event_date"] for row in rows)
                     self.checkpoint.update_price(symbol, last_date)
-                    state.setdefault("prices", {})[symbol] = {
-                        "last_event_date": last_date
-                    }
                     first_date = min(row["event_date"] for row in rows)
                     earliest = summary["earliest_event_date"]
                     if earliest is None or first_date < earliest:
@@ -224,9 +221,6 @@ class PipelineRunner:
                     if feed_exhausted:
                         last_time = max(row["published_at_utc"] for row in rows)
                         self.checkpoint.update_news(symbol, last_time)
-                        state.setdefault("news", {})[symbol] = {
-                            "last_published_at_utc": last_time
-                        }
                     else:
                         # Page budget spent with IB still flagging older
                         # unread headlines. Advancing would skip them forever
@@ -318,7 +312,6 @@ class PipelineRunner:
         # Wilder RSI/ATR are recursive, so a bounded window silently changes
         # their values. The per-flush cost is controlled by only recomputing
         # the symbols that ticked, not by truncating their history.
-        warm = prices
         cfg = self.config.stream
         symbols = list(cfg.symbols)
         if not symbols:
@@ -326,7 +319,7 @@ class PipelineRunner:
                 "stream.symbols is empty: list the symbols to subscribe to in the "
                 "config's stream section."
             )
-        state = {"ticks": 0, "quote_rows": 0, "feature_rows": 0, "flushes": 0}
+        state = {"ticks": 0, "feature_rows": 0, "flushes": 0}
         # Latest observed value per (symbol, field): the provisional bar carries
         # the real streamed open/high/low/volume, never a fabricated one.
         bars = {}
@@ -379,7 +372,7 @@ class PipelineRunner:
                 # Recompute over the moved symbols only: passing the whole warm
                 # panel made every flush sort and group all 658 symbols, which
                 # on a full universe costs more than the flush interval itself.
-                subset = warm[warm["symbol"].isin(priced)]
+                subset = prices[prices["symbol"].isin(priced)]
                 missing = sorted(set(priced) - set(subset["symbol"].unique()))
                 if missing:
                     self.logger.warning(
@@ -406,7 +399,6 @@ class PipelineRunner:
             # therefore report rows actually delivered, not partition sizes.
             pending.clear()
             state["ticks"] += len(rows)
-            state["quote_rows"] += len(rows)
             state["flushes"] += 1
             if priced:
                 state["feature_rows"] += len(live_i) + len(live_a)
@@ -510,7 +502,7 @@ class PipelineRunner:
             return {
                 "symbols": symbols,
                 "ticks": state["ticks"],
-                "quote_rows": state["quote_rows"],
+                "quote_rows": state["ticks"],
                 "live_feature_rows": state["feature_rows"],
                 "flushes": state["flushes"],
                 "market_data_type": cfg.market_data_type,

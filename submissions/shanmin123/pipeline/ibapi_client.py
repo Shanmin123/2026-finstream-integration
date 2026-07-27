@@ -181,11 +181,15 @@ class IBApiClient(EWrapper, EClient):
             event = self._events.get(reqId)
             if event is not None:
                 self._errors[reqId] = error
+                if (
+                    reqId in self._stream_request_ids
+                    and self._stream_error_latch is None
+                ):
+                    # Quote-subscription rejections would be erased by
+                    # stop_quote_stream's cleanup; latch the first, atomically
+                    # with the record that cleanup races against.
+                    self._stream_error_latch = error
         if event is not None:
-            if reqId in self._stream_request_ids and self._stream_error_latch is None:
-                # Quote-subscription rejections would be erased by
-                # stop_quote_stream's cleanup; latch the first one.
-                self._stream_error_latch = error
             event.set()
             return
 
@@ -562,14 +566,6 @@ class IBApiClient(EWrapper, EClient):
         with self._stream_lock:
             for request_id in request_ids:
                 self._stream_symbols.pop(request_id, None)
-        # Latch a rejection from up to and during the cancels before the
-        # cleanup below erases its per-request record.
-        if self._stream_error_latch is None:
-            for request_id in request_ids:
-                error = self._errors.get(request_id)
-                if error is not None:
-                    self._stream_error_latch = error
-                    break
         for request_id in request_ids:
             self._clean_request(request_id)
         self._stream_request_ids = []
@@ -661,12 +657,10 @@ class IBApiClient(EWrapper, EClient):
             numeric = float(value)
         except (TypeError, ValueError):
             return
-        # IB signals "unavailable" with sentinels rather than omitting the tick:
-        # -1 on any field, 0 or negative on a price, and a negative size/volume
-        # (observed: volume -36356795 outside market hours). Recording those
-        # produced impossible bars and, through them, nonsensical live alphas.
-        if numeric == -1:
-            return
+        # IB signals "unavailable" with sentinels rather than omitting the
+        # tick: -1 on any field, 0 or negative on a price, negative sizes
+        # (observed: volume -36356795 outside market hours). The two range
+        # checks reject all of them.
         if field in self._PRICE_FIELDS and numeric <= 0:
             return
         if field not in self._PRICE_FIELDS and numeric < 0:
