@@ -1,0 +1,150 @@
+pipelines:
+  - name: fundamentals
+    data_source:
+      name: "EODHD Fundamental Data API"
+      provider: "eodhd.com"
+      description: >
+        Annual and quarterly fundamental statements (Income Statement, Balance
+        Sheet, Cash Flow, plus reported EPS) for every active S&P 500
+        constituent. Every numeric field EODHD reports per fiscal period is
+        captured -- not a fixed taxonomy -- so nothing is silently discarded.
+
+    api:
+      endpoint: "https://eodhd.com/api/fundamentals/{TICKER}.{EXCHANGE}"
+      auth_method: "API token in query string (api_token param, loaded from .env -- see pipeline/.env.example -- never hardcoded)"
+      rate_limit: >
+        Confirmed empirically against the live account usage endpoint: 10 API
+        requests per call (not the usual 1/call weight) -- the whole
+        fundamentals document (all annual + quarterly periods) comes back in
+        a single request, so the true cost is a flat 10 requests/ticker
+        regardless of how many fiscal periods are returned. On a 100,000
+        requests/day shared plan, the full ~677-ticker constituents universe
+        costs ~6,770 requests (~6.8% of one day's quota).
+      docs_url: "https://eodhd.com/financial-apis/api-reference/"
+
+    output:
+      schema: >
+        MongoDB documents: {ticker, exchange, year, quarter (null for annual),
+        publish_date, report_type ("10-K"|"10-Q"),
+        metrics: {income_<field>, balance_<field>, cashflow_<field>, eps_actual, ...},
+        metadata: {source, processed_at}}. See samples/sample_annual_fundamental.json.
+      format: "MongoDB documents (financial_db)"
+      update_frequency: >
+        Run manually / on a periodic schedule (not yet wired to a fixed
+        cadence, pending confirmation) -- either directly (`python
+        pipeline/main.py`) or via the `sarah_fundamentals_pipeline` Airflow
+        DAG (`pipeline/airflow/dags/fundamentals_pipeline_dag.py`,
+        containerised via the repo-root docker-compose.yml/Dockerfile). Both
+        run the exact same collect/process/save code and share the same
+        config.yaml/checkpoint file. Each run re-fetches the full active
+        ticker universe and upserts -- EODHD updates statements as new
+        filings are published, so re-running naturally picks up new data
+        without any special "check for updates" logic needed.
+
+    storage_policy:
+      raw_data_location: "MongoDB financial_db (local Docker volume / native local Mongo during development) -- not committed to this repo"
+      intermediate_data_location: "n/a -- no intermediate persistence, raw EODHD JSON is transformed in-memory and written directly"
+      final_dataset_location: "Same MongoDB financial_db -- annual_fundamental / quarter_fundamental collections"
+      access_instructions: >
+        Local reproduction: see README.md Setup section. Production access:
+        same MongoDB instance the wider FinStreamAI platform reads from --
+        contact the core team for connection details. EODHD raw responses
+        are subject to EODHD's ToS (no third-party redistribution); derived
+        aggregates are unrestricted.
+
+    notes: >
+      Ticker universe: primarily the shared PostgreSQL `companies` table
+      (WHERE is_active = TRUE), with a local CSV(sp500_union_constituents.csv) as fallback if that table is
+      unreachable or empty -- see pipeline/ticker_universe.py. Idempotency:
+      upserts keyed on (ticker, year, report_type) for annual and
+      (ticker, year, quarter, report_type) for quarterly -- re-running never
+      duplicates a record. Resumability: a JSON checkpoint tracks which
+      tickers have been fetched in the current run (saved after each ticker,
+      not just at the end), so an interruption only costs the one ticker in
+      flight, not the whole batch -- this matters because each ticker is a
+      real, paid API call, not a free retry. The checkpoint resets after a
+      fully successful run, since this is a periodic refresh pipeline, not a
+      one-shot backfill.
+
+  - name: technical_indicators
+    data_source:
+      name: "Technical + Alpha101-style indicators (local computation) + EODHD Technical Indicator API (vendor cross-check)"
+      provider: "Computed from the platform's own price_data (PostgreSQL); EODHD Technical Indicator API (eodhd.com) for the vendor cross-check portion only"
+      description: >
+        Real-time technical indicators (SMA/EMA/RSI/MACD/Bollinger Bands/ATR/
+        ADX/CCI/Stochastic/Williams %R/Donchian/ROC/OBV/CMF/VWAP/etc.) and
+        WorldQuant Alpha101-style formulas (Alpha#2/3/6/9/12/28/41/54/101),
+        computed from the platform's own live price_data (no mock/synthetic
+        data, per project directive). A validated subset is additionally
+        cross-checked against EODHD's Technical Indicator API and stored
+        alongside the local values (never replacing them) for data-quality
+        review -- see pipeline/indicators/technical_comparison.py.
+
+    api:
+      endpoint: "https://eodhd.com/api/technical/{TICKER}.{EXCHANGE} (vendor cross-check only -- local computation needs no external API)"
+      auth_method: "API token in query string (api_token param, loaded from .env -- see pipeline/indicators/.env.example -- never hardcoded)"
+      rate_limit: >
+        Confirmed empirically against the live account usage endpoint: 5 API
+        requests per call (not the usual 1/call weight). Vendor cross-check
+        is capped to `vendor.ticker_limit` (default 20) distinct tickers per
+        run and `vendor.functions` (default "sma,bbands,macd" -- see Data
+        quality notes below) functions -- at the default settings, 20 tickers
+        x 5 functions x 5 credits = 500 requests/run (~0.5% of a 100,000/day
+        shared budget). Local computation and storage happens for EVERY
+        ticker regardless -- the limit only controls which tickers ALSO get
+        vendor cross-check fields.
+      docs_url: "https://eodhd.com/financial-apis/api-reference/"
+
+    output:
+      schema: >
+        MongoDB documents: {ticker, timestamp_ms, datetime_utc, interval
+        ("1d"|"5m"), open, high, low, close, volume, <45 local indicator
+        columns>, <_eodhd-suffixed vendor columns where cross-checked>,
+        vendor_fields_available: [list of this document's own _eodhd field
+        names]}. Every field ending in `_eodhd` is vendor-sourced; every
+        other field is computed locally. See
+        samples/sample_technical_indicator.json.
+      format: "MongoDB documents (financial_db.technical_indicators)"
+      update_frequency: >
+        Run manually / on a periodic schedule (not yet wired to a fixed
+        cadence, pending confirmation) -- either directly (`python
+        pipeline/indicators/main.py`) or via the `sarah_indicators_pipeline`
+        Airflow DAG (`pipeline/indicators/airflow/dags/indicators_pipeline_dag.py`,
+        containerised via docker-compose.yml's `sarah_indicators_airflow`
+        service). Incremental: reads a trailing lookback window from
+        price_data (wide enough to fill the longest rolling window), computes
+        over the whole window, then only pushes rows newer than the MongoDB
+        watermark (MAX(timestamp_ms) already stored per interval) -- re-running
+        never reprocesses full history, and an interrupted run is safe to
+        just re-trigger (see pipeline/indicators/mongo_writer.py).
+
+    storage_policy:
+      raw_data_location: "n/a -- price_data (the source) lives in the platform's own shared PostgreSQL instance, read-only from this pipeline"
+      intermediate_data_location: "n/a -- Spark/pandas computation is in-memory per run, no intermediate persistence"
+      final_dataset_location: "MongoDB financial_db.technical_indicators collection"
+      access_instructions: >
+        Local reproduction: see README.md's Technical Indicators Pipeline
+        section. Production access: same MongoDB instance the wider
+        FinStreamAI platform reads from -- contact the core team for
+        connection details. EODHD raw responses (vendor cross-check portion)
+        are subject to EODHD's ToS (no third-party redistribution); derived
+        local computation is unrestricted.
+
+    notes: >
+      Vendor cross-check is purely additive -- locally-computed columns are
+      NEVER modified or overwritten by a vendor value; `<Column>_eodhd` is
+      always a separate new field, only added for indicators EODHD
+      genuinely covers AND is confirmed accurate against local computation
+      on real data (see tests/summarize_technical_indicators_coverage.py
+      and technical_indicators_data_report.md in the wider repo for the
+      evidence). vendor.functions defaults to "sma,bbands,macd" -- these are
+      the ONLY functions confirmed (correlation 0.85-1.00 against local, on
+      real data) to agree well enough to trust by default; "rsi" showed weak
+      agreement (correlation 0.58, likely an insufficient-local-history
+      warm-up effect, not yet resolved) and is deliberately excluded from
+      the default until it converges or is otherwise explained; everything
+      else is simply untested so far, not confirmed bad -- widen
+      vendor.functions (or set to "ALL") once validated. Local computation
+      itself has no such restriction -- all ~45 local indicator/alpha
+      columns are always computed and stored for every active ticker,
+      regardless of vendor settings.

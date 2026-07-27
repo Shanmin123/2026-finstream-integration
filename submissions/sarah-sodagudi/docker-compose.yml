@@ -1,0 +1,99 @@
+# =============================================================
+# Standalone Airflow containers for triggering each pipeline as a DAG
+# instead of `python main.py` directly.
+# Author: Sarah Sodagudi
+#
+# Self-contained (CONTRIBUTING.md "runs from a clean clone") -- each
+# service brings its own Airflow, does NOT depend on any other folder in
+# the wider integration tree. Neither brings its own Postgres/MongoDB:
+# they connect OUT to whatever their own pipeline/*/config.yaml points at
+# (same as running main.py directly), read-only for Postgres, upsert-only
+# for MongoDB.
+#
+# POSTGRES_HOST / MONGO_HOST are set to host.docker.internal below --
+# Postgres/Mongo run on the HOST machine (native local Mongo / Postgres
+# reachable via a docker-compose port mapping, e.g. 5433), not inside
+# either of these containers. "localhost" inside a container means the
+# container itself, so it would otherwise silently connect-refuse. Both
+# main.py's load_config() read these env vars and override config.yaml's
+# postgres.host/mongo.host if set -- config.yaml's own "localhost" stays
+# correct for running `python main.py` directly on the host, so the SAME
+# config.yaml file works unedited for both run modes.
+# `extra_hosts: host-gateway` makes host.docker.internal resolve on
+# Linux too (Docker Desktop for Windows/Mac already provides it without
+# this, but it's harmless there and needed for portability elsewhere).
+# =============================================================
+services:
+  sarah_fundamentals_airflow:
+    build: .
+    container_name: sarah_fundamentals_airflow
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor  # SQLite metadata DB; no separate DB container needed
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW_HOME: /opt/airflow
+      PIPELINE_SRC: /opt/airflow/pipeline_src
+      POSTGRES_HOST: host.docker.internal
+      MONGO_HOST: host.docker.internal
+    ports:
+      - "8082:8080"  # 8082 -- avoids clashing with the platform's own Airflow (8080) and the indicators container below (8083)
+    volumes:
+      - ./pipeline/airflow/dags:/opt/airflow/dags
+      - ./pipeline:/opt/airflow/pipeline_src   # main.py + its sibling modules + your own config.yaml/.env
+      - sarah_fundamentals_airflow_home:/opt/airflow
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username admin --password admin --firstname Sarah --lastname Sodagudi --role Admin --email admin@example.com || true &&
+        airflow webserver --port 8080 &
+        exec airflow scheduler
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  sarah_indicators_airflow:
+    build:
+      context: .
+      dockerfile: pipeline/indicators/Dockerfile
+    container_name: sarah_indicators_airflow
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW_HOME: /opt/airflow
+      PIPELINE_SRC: /opt/airflow/pipeline_src
+      POSTGRES_HOST: host.docker.internal
+      MONGO_HOST: host.docker.internal
+    ports:
+      - "8083:8080"  # 8083 -- 8081 was originally reserved for this container but was already bound by something else on the host, so moved to 8083 instead
+    volumes:
+      - ./pipeline/indicators/airflow/dags:/opt/airflow/dags
+      - ./pipeline/indicators:/opt/airflow/pipeline_src   # main.py + its sibling modules + your own config.yaml/.env
+      - sarah_indicators_airflow_home:/opt/airflow
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username admin --password admin --firstname Sarah --lastname Sodagudi --role Admin --email admin@example.com || true &&
+        airflow webserver --port 8080 &
+        exec airflow scheduler
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s  # PySpark's JVM warms up slower than the fundamentals container's plain-Python startup
+
+volumes:
+  sarah_fundamentals_airflow_home:
+  sarah_indicators_airflow_home:

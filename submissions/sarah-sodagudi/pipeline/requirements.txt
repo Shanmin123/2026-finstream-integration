@@ -1,0 +1,10 @@
+# Pin versions compatible with our production stack (Python 3.8, Airflow 2.8.1).
+# Verify any new library's Python 3.8 compatibility before adding it here.
+#
+# This fundamentals-only pipeline does not need PySpark/pandas -- it's a
+# straightforward fetch -> flatten -> upsert flow, no OHLCV computation.
+
+pyyaml==6.0.1
+requests==2.31.0
+psycopg2-binary==2.9.9   # read-only access to the shared companies(postgres) table
+pymongo==4.6.3            # MongoDB output
