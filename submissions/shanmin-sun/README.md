@@ -90,7 +90,7 @@ approved universe file before a full collection run.
 
 ## Commands
 
-Run the commands from `submissions/shanmin123` with IB Gateway open:
+Run the commands from `submissions/shanmin-sun` with IB Gateway open:
 
 ```bash
 python -m pipeline.main --config config.yaml smoke-test
