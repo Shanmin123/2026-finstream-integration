@@ -153,7 +153,7 @@ def test_news_pagination_follows_has_more_and_stops_at_the_checkpoint(monkeypatc
     ]
     # Page 2 re-anchors both bounds at the oldest time of page 1.
     assert anchors[1] == ("2025-01-02 11:00:00.0", "2025-01-02 11:00:00.0")
-    assert client._news == {} and client._news_has_more == {}
+    assert client._news == {}
 
 
 def test_pagination_advances_past_a_page_of_boundary_duplicates(monkeypatch):
@@ -444,7 +444,7 @@ def test_late_error_after_cleanup_neither_raises_nor_recreates_state():
 def test_late_news_end_does_not_recreate_the_freed_has_more_entry():
     client = IBApiClient("127.0.0.1", 4002, 31, request_timeout_seconds=1)
     client.historicalNewsEnd(4242, True)
-    assert client._news_has_more == {}
+    assert client._news == {}
 
 
 def test_ticks_after_unsubscription_are_dropped_not_stranded(monkeypatch):

@@ -228,14 +228,10 @@ class PipelineRunner:
                             "last_published_at_utc": last_time
                         }
                     else:
-                        # The page budget ran out with IB still flagging older
-                        # unread headlines. Every anchor starts at "now", so
-                        # no checkpoint value can make the next default run
-                        # reach deeper -- advancing would skip the remainder
-                        # forever, and pretending progress downward would
-                        # livelock. The checkpoint therefore stays put, the
-                        # gap is reported, and the operator raises
-                        # news.max_pages (or limit) to cover it.
+                        # Page budget spent with IB still flagging older
+                        # unread headlines. Advancing would skip them forever
+                        # (every anchor starts at "now"), so the checkpoint
+                        # holds and news.max_pages is the lever to cover it.
                         self.logger.warning(
                             "news_backlog_exceeds_page_budget",
                             extra={
@@ -334,11 +330,9 @@ class PipelineRunner:
         # Latest observed value per (symbol, field): the provisional bar carries
         # the real streamed open/high/low/volume, never a fabricated one.
         bars = {}
-        # Drained but not yet durably flushed. A failure anywhere in the flush
-        # (parquet write, feature recompute, sink) leaves the batch here and the
-        # next flush -- including the shutdown drains -- retries it, so a
-        # drained tick is never lost. Replays are absorbed by the parquet
-        # dedup-merge and the database conflict clauses (at-least-once).
+        # Drained but not yet durably flushed: a failure anywhere in the
+        # flush leaves the batch here and the next flush (including the
+        # shutdown drains) retries it. At-least-once; dedup absorbs replays.
         pending = []
 
         def flush():
@@ -438,7 +432,7 @@ class PipelineRunner:
             )
             try:
                 while deadline is None or time.time() < deadline:
-                    error = getattr(self.client, "stream_error", lambda: None)()
+                    error = self.client.stream_error()
                     if error is not None:
                         raise error
                     # Never sleep past the deadline: a flush interval longer
@@ -452,7 +446,7 @@ class PipelineRunner:
                         # Same terminal check as the capture loop: a rejection
                         # during the final interval must not be lost to the
                         # deadline.
-                        error = getattr(self.client, "stream_error", lambda: None)()
+                        error = self.client.stream_error()
                         if error is not None:
                             raise error
                         break
@@ -462,20 +456,15 @@ class PipelineRunner:
                     extra={"dataset": "quotes", "symbol": "*", "rows": 0},
                 )
             finally:
-                # Drain before cancelling (stop_quote_stream drops the request
-                # mapping, so ticks decoded after it would be discarded), then
-                # cancel, then drain again for whatever arrived in between.
-                # Every step runs even if an earlier one raised: a sink that
-                # fails on the first drain must not strand the ticks the second
-                # one owns.
+                # Drain, cancel, drain again -- and every step runs even if an
+                # earlier one raised: a sink failing on the first drain must
+                # not strand the ticks the second one owns.
                 primary = sys.exc_info()[1]
 
                 def pending_stream_error():
-                    # A rejection landing between the loop's last check and
-                    # shutdown would otherwise be erased by stop_quote_stream's
-                    # request cleanup and the run would read as a success.
-                    # Checked AFTER the first drain so the data is already safe.
-                    error = getattr(self.client, "stream_error", lambda: None)()
+                    # A rejection landing after the loop's last check must not
+                    # read as success; checked after a drain so data is safe.
+                    error = self.client.stream_error()
                     if error is None or error is primary:
                         return
                     if any(error is seen for seen in shutdown_errors):

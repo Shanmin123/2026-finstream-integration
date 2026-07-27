@@ -202,6 +202,9 @@ class FakeStreamClient(FakeClient):
     def stop_quote_stream(self):
         self.stopped += 1
 
+    def stream_error(self):
+        return None
+
 
 def _tick(symbol, field, value, date="2026-07-25"):
     return {

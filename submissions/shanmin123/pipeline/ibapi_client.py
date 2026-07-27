@@ -58,7 +58,6 @@ class IBApiClient(EWrapper, EClient):
         self._contract_details = {}
         self._bars = {}
         self._news = {}
-        self._news_has_more = {}
 
         self._providers_event = threading.Event()
         self._providers = []
@@ -357,8 +356,7 @@ class IBApiClient(EWrapper, EClient):
         page_start, page_end = start, end
         for _page in range(max(1, int(max_pages))):
             request_id = self._new_request()
-            self._news[request_id] = []
-            self._news_has_more[request_id] = False
+            self._news[request_id] = {"rows": [], "has_more": False}
             try:
                 self.reqHistoricalNews(
                     request_id,
@@ -370,16 +368,11 @@ class IBApiClient(EWrapper, EClient):
                     [],
                 )
                 self._wait_for_request(request_id, "historical news headlines")
-                raw = list(self._news[request_id])
-                has_more = self._news_has_more[request_id]
+                raw = list(self._news[request_id]["rows"])
+                has_more = self._news[request_id]["has_more"]
             finally:
                 self._clean_request(request_id)
                 self._news.pop(request_id, None)
-                # Under the same lock historicalNewsEnd's check-and-set holds:
-                # an unlocked pop could land between its check and its write,
-                # which would recreate the entry as an orphan.
-                with self._id_lock:
-                    self._news_has_more.pop(request_id, None)
             fresh = []
             for row in raw:
                 # Article ids are provider-specific: the persisted identity is
@@ -433,14 +426,14 @@ class IBApiClient(EWrapper, EClient):
     def historicalNews(self, requestId, time, providerCode, articleId, headline):
         bucket = self._news.get(requestId)
         if bucket is not None:
-            bucket.append((time, providerCode, articleId, headline))
+            bucket["rows"].append((time, providerCode, articleId, headline))
 
     def historicalNewsEnd(self, requestId, hasMore):
-        # Check-and-set under the lock: writing after the caller's timeout
-        # cleanup popped the entry would recreate it as an orphan.
-        with self._id_lock:
-            if requestId in self._news_has_more:
-                self._news_has_more[requestId] = bool(hasMore)
+        # Mutating the snapshotted bucket keeps this lock-free: after a
+        # timeout cleanup the write lands on the orphaned dict and is GC'd.
+        bucket = self._news.get(requestId)
+        if bucket is not None:
+            bucket["has_more"] = bool(hasMore)
         self._finish_request(requestId)
 
     def _new_request(self):
@@ -449,10 +442,9 @@ class IBApiClient(EWrapper, EClient):
             self._next_id += 1
             event = threading.Event()
             self._events[request_id] = event
-            # Registered under the same lock _fail_all_pending sweeps with,
-            # and seeded when the connection is ALREADY dead: a request born
-            # in either gap would otherwise wait out its full timeout for a
-            # response that can never arrive.
+            # Registered under _fail_all_pending's lock, and seeded when the
+            # connection is already dead: either gap would make this request
+            # wait out its full timeout for a response that cannot arrive.
             if self._connection_error is not None:
                 self._errors[request_id] = self._connection_error
                 event.set()
@@ -517,10 +509,8 @@ class IBApiClient(EWrapper, EClient):
                 self._stream_request_ids.append(request_id)
                 self.reqMktData(request_id, contract, "", False, False, [])
             except BaseException:
-                # A half-built subscription set must not leak: the server
-                # would keep streaming into requests nobody will drain. The
-                # ORIGINAL failure stays primary even if the cleanup's own
-                # cancel also fails.
+                # A half-built subscription set must not leak; the original
+                # failure stays primary even if the cleanup itself fails.
                 try:
                     self.stop_quote_stream()
                 except BaseException:
@@ -549,14 +539,14 @@ class IBApiClient(EWrapper, EClient):
         """
         if self._stream_error_latch is not None:
             return self._stream_error_latch
-        for request_id in getattr(self, "_stream_request_ids", []):
+        for request_id in self._stream_request_ids:
             error = self._errors.get(request_id)
             if error is not None:
                 return error
         return self._connection_error
 
     def stop_quote_stream(self):
-        request_ids = list(getattr(self, "_stream_request_ids", []))
+        request_ids = list(self._stream_request_ids)
         # A cancel raising must not abandon the remaining cancels or the local
         # cleanup below; the first failure resurfaces once cleanup is done.
         cancel_error = None
@@ -566,15 +556,14 @@ class IBApiClient(EWrapper, EClient):
             except BaseException as exc:
                 if cancel_error is None:
                     cancel_error = exc
-        # One locked pass over the subscriptions (socket writes above stay
-        # outside the lock): after this, a tick still being decoded finds no
-        # symbol and is dropped inside _record_tick's own locked section, so
+        # One locked pass (socket writes stay outside the lock): after this,
+        # a tick still being decoded finds no symbol and is dropped, so
         # nothing can append behind the caller's final drain.
         with self._stream_lock:
             for request_id in request_ids:
                 self._stream_symbols.pop(request_id, None)
-        # Latch any rejection that arrived up to and during the cancels before
-        # the cleanup below erases the per-request record of it.
+        # Latch a rejection from up to and during the cancels before the
+        # cleanup below erases its per-request record.
         if self._stream_error_latch is None:
             for request_id in request_ids:
                 error = self._errors.get(request_id)
