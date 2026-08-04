@@ -136,13 +136,21 @@ class PipelineRunner:
                     self._run_id("prices", symbol, retrieved_at),
                 )
                 if rows:
-                    last_date = max(row["event_date"] for row in rows)
-                    self.checkpoint.update_price(symbol, last_date)
+                    # Account for the rows as soon as they are durable, before the
+                    # checkpoint write, which can fail on its own. Doing it after
+                    # meant a checkpoint failure under continue_on_error left the
+                    # rows on disk while the run's watermark never learned their
+                    # first date, and the loader's `event_date >= watermark` filter
+                    # then skipped exactly those rows.
                     first_date = min(row["event_date"] for row in rows)
                     earliest = summary["earliest_event_date"]
                     if earliest is None or first_date < earliest:
                         summary["earliest_event_date"] = first_date
-                summary["written"] += len(rows)
+                    summary["written"] += len(rows)
+                    last_date = max(row["event_date"] for row in rows)
+                    # A failure here costs a re-fetch next run, which the conflict
+                    # clauses absorb; it no longer strands anything.
+                    self.checkpoint.update_price(symbol, last_date)
                 self.logger.info(
                     "dataset_write_complete",
                     extra={"dataset": "prices", "symbol": symbol, "rows": len(rows)},
@@ -218,6 +226,10 @@ class PipelineRunner:
                         "news_fetched",
                         extra={"dataset": "news", "symbol": symbol, "rows": fresh},
                     )
+                    # Count the rows before the checkpoint write, for the same
+                    # reason as prices: they are already durable, and a checkpoint
+                    # failure must not make the run under-report what landed.
+                    summary["written"] += len(rows)
                     if feed_exhausted:
                         last_time = max(row["published_at_utc"] for row in rows)
                         self.checkpoint.update_news(symbol, last_time)
@@ -234,7 +246,6 @@ class PipelineRunner:
                                 "rows": len(rows),
                             },
                         )
-                summary["written"] += len(rows)
                 self.logger.info(
                     "dataset_write_complete",
                     extra={"dataset": "news", "symbol": symbol, "rows": len(rows)},

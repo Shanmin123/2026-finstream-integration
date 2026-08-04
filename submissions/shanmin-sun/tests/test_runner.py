@@ -636,3 +636,44 @@ def test_truncated_news_walk_holds_the_checkpoint_and_reports_the_gap(pipeline_c
     assert any(
         record.msg == "news_backlog_exceeds_page_budget" for record in records
     )
+
+
+def test_durable_rows_stay_inside_the_watermark_when_the_checkpoint_write_fails(
+    pipeline_config,
+):
+    """Accounting must follow the durable write, not a later fallible step.
+
+    write_prices lands the rows, then the watermark and the row count are taken,
+    then the checkpoint is written. The checkpoint write used to come first, so a
+    failure there left the rows on disk while the watermark never learned about
+    them, and under continue_on_error the DAG's `event_date >= watermark` filter
+    then skipped exactly those rows.
+    """
+    class FailingCheckpoint(CheckpointStore):
+        def update_price(self, symbol, last_event_date):
+            raise OSError("checkpoint volume full")
+
+    client = FakeClient()
+    storage = LayeredStorage(
+        pipeline_config.paths.raw_data_dir,
+        pipeline_config.paths.intermediate_data_dir,
+        pipeline_config.paths.output_dir,
+    )
+    runner = PipelineRunner(
+        config=pipeline_config,
+        client=client,
+        storage=storage,
+        checkpoint=FailingCheckpoint(pipeline_config.paths.checkpoint_file),
+        now_fn=lambda: datetime(2025, 1, 3, tzinfo=timezone.utc),
+        sleep_fn=lambda _seconds: None,
+    )
+
+    summary = runner.run_prices()
+
+    # The checkpoint failure is reported and the run continues.
+    assert len(summary["errors"]) == 2
+    # The rows are durable, so the watermark has to cover them.
+    panel = storage.read_final_prices()
+    assert not panel.empty
+    assert summary["earliest_event_date"] == panel["event_date"].min()
+    assert summary["written"] == len(panel)
