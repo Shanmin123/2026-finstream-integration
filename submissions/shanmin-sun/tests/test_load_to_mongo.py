@@ -176,6 +176,78 @@ def test_empty_parquet_files_are_skipped_not_concatenated(tmp_path):
     )) == []
 
 
+class SmokeCollection:
+    def __init__(self, store):
+        self.store = store
+        self.documents = []
+
+    def count_documents(self, query):
+        return sum(1 for d in self.documents if d["ticker"] == query["ticker"])
+
+    def delete_one(self, key):
+        for index, document in enumerate(self.documents):
+            if all(document[k] == v for k, v in key.items()):
+                self.documents.pop(index)
+                return type("R", (), {"deleted_count": 1})()
+        return type("R", (), {"deleted_count": 0})()
+
+
+class SmokeDatabase:
+    def __init__(self, collection):
+        self.collection = collection
+
+    def __getitem__(self, _name):
+        return self.collection
+
+
+def test_the_smoke_test_writes_rewrites_and_removes_only_its_own_rows(monkeypatch):
+    """The first live contact should be two documents, not millions, and it
+    must leave the database exactly as it found it."""
+    collection = SmokeCollection([])
+    database = SmokeDatabase(collection)
+
+    def fake_write(rows, factory):
+        from pipeline.mongo_sink import PRICE_KEY, price_documents
+
+        written = 0
+        for document in price_documents(rows):
+            key = {f: document[f] for f in PRICE_KEY}
+            if not any(all(d[k] == v for k, v in key.items())
+                       for d in collection.documents):
+                collection.documents.append(document)
+                written += 1
+        return written
+
+    monkeypatch.setattr(load_to_mongo, "write_prices", fake_write)
+    report = load_to_mongo.smoke_test(lambda: database)
+
+    assert report["wrote"] == 2 and report["found"] == 2
+    assert report["second_write_added"] == 0, "the conflict policy did not hold"
+    assert report["idempotent"] is True
+    assert report["cleaned_up"] == 2
+    assert collection.documents == [], "the smoke test left rows behind"
+
+
+def test_the_smoke_test_uses_a_ticker_no_exchange_lists():
+    assert not load_to_mongo.SMOKE_TICKER.isalpha()
+
+
+def test_the_smoke_test_cleans_up_even_when_the_write_fails(monkeypatch):
+    collection = SmokeCollection([])
+    monkeypatch.setattr(
+        load_to_mongo, "write_prices",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("connection reset")),
+    )
+    with pytest.raises(RuntimeError):
+        load_to_mongo.smoke_test(lambda: SmokeDatabase(collection))
+    assert collection.documents == []
+
+
+def test_data_root_is_only_required_for_a_real_load(capsys):
+    code, out = run([], capsys)
+    assert code == 1 and "--data-root is required" in json.loads(out.err)["error"]
+
+
 def test_batching_keeps_a_symbol_whole_and_covers_every_row(dataset_root):
     files = load_to_mongo.parquet_files(dataset_root, "prices")
     batches = list(load_to_mongo.batched(files, batch_size=1))

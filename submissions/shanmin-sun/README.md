@@ -193,12 +193,25 @@ IBKR.
 ```bash
 pip install ".[mongo]"
 python scripts/load_to_mongo.py --data-root data/output --dry-run   # counts only
-python scripts/load_to_mongo.py --data-root data/output
+python scripts/load_to_mongo.py --smoke-test                        # two documents
+python scripts/load_to_mongo.py --data-root data/output             # the load
 ```
 
 `--dry-run` reads and validates every file and reports what would be written
 without opening a connection. Every write is keyed and idempotent, so an
 interrupted load is resumed by running it again.
+
+Run `--smoke-test` first against a database nobody here has reached before. It
+writes two documents under a ticker no exchange lists, checks that a second
+identical write adds nothing, removes exactly what it wrote, and reports. That
+turns the first live contact into ten seconds rather than several million
+documents.
+
+The sinks and the loader are covered by unit tests against injected fakes, and
+the parquet side of the loader runs against the real datasets. **The write path
+has not been exercised against a live MongoDB**, because no credentials for the
+platform's database have been issued to this submission yet. `--smoke-test` is
+the first thing to run when they are.
 
 Connection settings come from the environment, either `MONGO_URI` plus
 `MONGO_DB`, or `MONGO_HOST` / `MONGO_PORT` / `MONGO_USER` / `MONGO_PASSWORD` /

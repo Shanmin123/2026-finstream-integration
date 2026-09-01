@@ -122,11 +122,58 @@ def load_dataset(dataset, root, batch_size, database_factory, dry_run):
     }
 
 
+SMOKE_TICKER = "__IBKR_SMOKE__"
+
+
+def smoke_test(database_factory=get_database):
+    """Prove the connection and the conflict policy on a handful of documents.
+
+    The full load is millions of documents. This is what to run first against a
+    database nobody here has reached before: it writes two rows under a ticker
+    no exchange lists, checks that a second identical write adds nothing, and
+    removes exactly what it wrote. It touches no real ticker.
+    """
+    from pipeline.mongo_sink import PRICE_COLLECTION, PRICE_KEY, price_documents
+
+    rows = [
+        {"event_date": "2000-01-03", "symbol": SMOKE_TICKER, "open": 1.0,
+         "high": 2.0, "low": 0.5, "close": 1.5, "volume": 1.0},
+        {"event_date": "2000-01-04", "symbol": SMOKE_TICKER, "open": 1.5,
+         "high": 2.5, "low": 1.0, "close": 2.0, "volume": 2.0},
+    ]
+    documents = price_documents(rows)
+    keys = [{field: d[field] for field in PRICE_KEY} for d in documents]
+    database = database_factory()
+    collection = database[PRICE_COLLECTION]
+    try:
+        first = write_prices(rows, database_factory)
+        found = collection.count_documents({"ticker": SMOKE_TICKER})
+        second = write_prices(rows, database_factory)
+        again = collection.count_documents({"ticker": SMOKE_TICKER})
+    finally:
+        # Only the two documents this function wrote, by their exact keys.
+        removed = sum(collection.delete_one(key).deleted_count for key in keys)
+    return {
+        "wrote": first,
+        "found": found,
+        "second_write_added": second,
+        "count_after_second_write": again,
+        "idempotent": found == again == len(rows) and second == 0,
+        "cleaned_up": removed,
+    }
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
-        "--data-root", required=True,
+        "--data-root",
         help="The collector's output directory, holding prices/ indicators/ alphas/.",
+    )
+    parser.add_argument(
+        "--smoke-test", action="store_true",
+        help="Write, re-write and remove two documents under a placeholder "
+             "ticker, to check the connection and the conflict policy before "
+             "loading millions. Needs no --data-root.",
     )
     parser.add_argument(
         "--datasets", default="prices,indicators,alphas",
@@ -150,6 +197,22 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if args.smoke_test:
+        try:
+            report = smoke_test(get_database)
+        except Exception as exc:
+            print(json.dumps({"status": "failed", "error": str(exc),
+                              "type": type(exc).__name__}), file=sys.stderr)
+            return 1
+        print(json.dumps({"status": "smoke_test", **report}, indent=2))
+        return 0 if report["idempotent"] else 1
+
+    if not args.data_root:
+        print(json.dumps({"status": "failed",
+                          "error": "--data-root is required unless --smoke-test"}),
+              file=sys.stderr)
+        return 1
 
     root = Path(args.data_root)
     if not root.is_dir():
