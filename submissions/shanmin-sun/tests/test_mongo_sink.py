@@ -170,6 +170,13 @@ def test_prices_do_not_overwrite_the_primary_feed():
     assert set(operation._filter) == set(PRICE_KEY)
     assert set(operation._doc) == {"$setOnInsert"}
     assert operation._upsert is True
+    # The key fields come from the filter on an upsert; naming them again in
+    # the operator asks the server to write a path the filter already fixed.
+    assert not set(operation._doc["$setOnInsert"]) & set(PRICE_KEY)
+    # Everything else must be there, or an inserted bar would be missing a price.
+    assert set(operation._doc["$setOnInsert"]) == {
+        "datetime_utc", "open", "high", "low", "close", "volume", "source",
+    }
 
 
 def test_quotes_are_immutable_observations():
@@ -182,6 +189,9 @@ def test_quotes_are_immutable_observations():
     collection, _, operations, _ = store[0]
     assert collection == QUOTE_COLLECTION
     assert set(operations[0]._doc) == {"$setOnInsert"}
+    assert set(operations[0]._doc["$setOnInsert"]) == {
+        "datetime_utc", "value", "market_data_type",
+    }
 
 
 def test_derived_writes_are_guarded_pipeline_updates():

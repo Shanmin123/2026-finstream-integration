@@ -273,17 +273,27 @@ def _bulk(collection, operations, database_factory):
 
 
 def _insert_if_absent(documents, key):
-    """Mirror of ON CONFLICT DO NOTHING: the document already there wins."""
+    """Mirror of ON CONFLICT DO NOTHING: the document already there wins.
+
+    Only the non-key fields are set. On an upsert MongoDB builds the new
+    document from the filter's equality clauses first, so the key fields arrive
+    that way; naming them again in the operator would be asking the server to
+    write a path the filter has already fixed. This also matches
+    _upsert_if_newer, which sets the mutable fields for the same reason.
+    """
     from pymongo import UpdateOne
 
-    return [
-        UpdateOne(
-            {field: document[field] for field in key},
-            {"$setOnInsert": document},
-            upsert=True,
+    operations = []
+    for document in documents:
+        mutable = {k: v for k, v in document.items() if k not in key}
+        operations.append(
+            UpdateOne(
+                {field: document[field] for field in key},
+                {"$setOnInsert": mutable},
+                upsert=True,
+            )
         )
-        for document in documents
-    ]
+    return operations
 
 
 def _upsert_if_newer(documents, key):
