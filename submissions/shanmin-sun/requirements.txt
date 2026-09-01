@@ -4,6 +4,8 @@ pandas==1.3.5
 pyarrow==12.0.1
 PyYAML==6.0.1
 
-# Optional: PostgreSQL sink for the FinStream platform database.
-# The parquet datasets are the primary output; the pipeline runs without it.
+# Optional: database sinks for the FinStream platform. The parquet datasets
+# are the primary output; the pipeline runs without either of these.
 psycopg2-binary==2.9.9
+pymongo==4.17.0
+sshtunnel==0.4.0

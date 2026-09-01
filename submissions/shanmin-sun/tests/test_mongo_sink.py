@@ -1,0 +1,323 @@
+from datetime import datetime, timezone
+
+import pandas as pd
+import pytest
+from pymongo.errors import BulkWriteError
+
+from pipeline.db_sink import DAILY_INTERVAL, SOURCE
+from pipeline.mongo_sink import (
+    ALPHA_COLLECTION,
+    ALPHA_KEY,
+    INDICATOR_COLLECTION,
+    INDICATOR_KEY,
+    PRICE_COLLECTION,
+    PRICE_KEY,
+    QUOTE_COLLECTION,
+    FieldContractError,
+    build_uri,
+    derived_documents,
+    ensure_indexes,
+    get_active_tickers,
+    price_documents,
+    quote_documents,
+    record_run,
+    write_alphas,
+    write_indicators,
+    write_prices,
+    write_quotes,
+)
+
+
+class FakeResult:
+    def __init__(self, upserted=0, modified=0):
+        self.upserted_count = upserted
+        self.modified_count = modified
+
+
+class FakeCollection:
+    def __init__(self, store, name, result=None, rows=None, raises=None):
+        self.store = store
+        self.name = name
+        self._result = result or FakeResult()
+        self._rows = rows or []
+        self._raises = raises
+
+    def bulk_write(self, operations, ordered=True):
+        if self._raises is not None:
+            raise self._raises
+        self.store.append((self.name, "bulk_write", operations, ordered))
+        return self._result
+
+    def insert_one(self, document):
+        self.store.append((self.name, "insert_one", document))
+
+    def create_index(self, keys, **kwargs):
+        self.store.append((self.name, "create_index", keys, kwargs))
+        return kwargs.get("name", "idx")
+
+    def find(self, query, projection=None):
+        self.store.append((self.name, "find", query, projection))
+        return FakeCursor(self._rows)
+
+
+class FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def sort(self, *_args):
+        return self
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class FakeDatabase:
+    def __init__(self, store, result=None, rows=None, raises=None):
+        self.store = store
+        self._result = result
+        self._rows = rows
+        self._raises = raises
+
+    def __getitem__(self, name):
+        return FakeCollection(self.store, name, self._result, self._rows, self._raises)
+
+
+def database_of(store, **kwargs):
+    return lambda: FakeDatabase(store, **kwargs)
+
+
+PRICE_ROW = {
+    "event_date": "2026-07-24", "symbol": "AAPL", "open": 1.0, "high": 2.0,
+    "low": 0.5, "close": 1.5, "volume": 100.0,
+}
+
+
+def indicator_frame(value=55.0, computed="2026-07-25T00:00:00+00:00",
+                    provisional=False):
+    return pd.DataFrame(
+        [{
+            "symbol": "AAPL", "event_date": "2026-07-24", "rsi_14": value,
+            "computed_at_utc": computed, "provisional": provisional,
+        }]
+    )
+
+
+# --- row to document -------------------------------------------------------
+
+def test_price_documents_carry_the_sql_field_names():
+    document = price_documents([PRICE_ROW])[0]
+    assert set(document) == {
+        "ticker", "timestamp_ms", "datetime_utc", "open", "high", "low",
+        "close", "volume", "interval", "source",
+    }
+    assert document["ticker"] == "AAPL"
+    assert document["timestamp_ms"] == int(
+        datetime(2026, 7, 24, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    assert document["interval"] == DAILY_INTERVAL and document["source"] == SOURCE
+
+
+def test_datetime_fields_are_bson_dates_not_strings():
+    """A string date sorts lexically and breaks every range query on it."""
+    document = price_documents([PRICE_ROW])[0]
+    assert isinstance(document["datetime_utc"], datetime)
+    assert document["datetime_utc"].tzinfo is not None
+
+    derived = derived_documents(indicator_frame(), "indicator_name")[0]
+    assert isinstance(derived["datetime_utc"], datetime)
+    assert isinstance(derived["computed_at_utc"], datetime)
+
+
+def test_derived_documents_name_their_own_key_column():
+    indicator = derived_documents(indicator_frame(), "indicator_name")[0]
+    assert indicator["indicator_name"] == "rsi_14"
+    assert "alpha_id" not in indicator
+
+    alphas = pd.DataFrame([{
+        "symbol": "AAPL", "event_date": "2026-07-24", "alpha_6": -0.5,
+        "computed_at_utc": "2026-07-25T00:00:00+00:00", "provisional": False,
+    }])
+    assert derived_documents(alphas, "alpha_id")[0]["alpha_id"] == "alpha_6"
+
+
+def test_a_mapper_that_grows_a_column_fails_loudly(monkeypatch):
+    """The two sinks share db_sink's mappers. If one grows a field and this
+    module does not follow, the write must raise rather than store a document
+    with a value silently dropped off the end."""
+    monkeypatch.setattr(
+        "pipeline.mongo_sink.price_rows_to_platform",
+        lambda rows: [("AAPL", 1, "2026-07-24T00:00:00+00:00", 1.0)],
+    )
+    with pytest.raises(FieldContractError):
+        price_documents([PRICE_ROW])
+
+
+def test_non_finite_values_never_reach_the_database():
+    assert derived_documents(indicator_frame(float("nan")), "indicator_name") == []
+    assert derived_documents(indicator_frame(float("inf")), "indicator_name") == []
+
+
+# --- conflict policy -------------------------------------------------------
+
+def test_prices_do_not_overwrite_the_primary_feed():
+    """price_data's SQL policy is DO NOTHING, so the document already there
+    wins and this feed stays a gap filler."""
+    store = []
+    write_prices([PRICE_ROW], database_of(store, result=FakeResult(upserted=1)))
+    collection, _, operations, ordered = store[0]
+    assert collection == PRICE_COLLECTION and ordered is False
+    operation = operations[0]
+    assert set(operation._filter) == set(PRICE_KEY)
+    assert set(operation._doc) == {"$setOnInsert"}
+    assert operation._upsert is True
+
+
+def test_quotes_are_immutable_observations():
+    store = []
+    rows = [{
+        "symbol": "AAPL", "tick_time_utc": "2026-07-24T13:31:00+00:00",
+        "field": "last", "value": 1.5,
+    }]
+    write_quotes(rows, 3, database_of(store, result=FakeResult(upserted=1)))
+    collection, _, operations, _ = store[0]
+    assert collection == QUOTE_COLLECTION
+    assert set(operations[0]._doc) == {"$setOnInsert"}
+
+
+def test_derived_writes_are_guarded_pipeline_updates():
+    """A read-then-write would let two collectors interleave and lose the
+    newer value, so the guard has to run inside the update."""
+    store = []
+    write_indicators(
+        indicator_frame(), database_factory=database_of(store, result=FakeResult(1))
+    )
+    collection, _, operations, _ = store[0]
+    assert collection == INDICATOR_COLLECTION
+    operation = operations[0]
+    assert set(operation._filter) == set(INDICATOR_KEY)
+    assert isinstance(operation._doc, list), "must be an aggregation pipeline"
+    stage = operation._doc[0]["$set"]
+    # Key fields are the filter's job; only the mutable ones are conditional.
+    assert set(stage) == {"value", "datetime_utc", "is_provisional", "computed_at_utc"}
+    assert all("$cond" in expression for expression in stage.values())
+
+
+def test_a_provisional_value_cannot_replace_a_final_one():
+    store = []
+    write_indicators(
+        indicator_frame(provisional=True),
+        database_factory=database_of(store, result=FakeResult(1)),
+    )
+    condition = store[0][2][0]._doc[0]["$set"]["value"]["$cond"][0]
+    branches = condition["$or"]
+    # Either the document is absent, or it is older AND not being downgraded.
+    assert {"$eq": [{"$type": "$computed_at_utc"}, "missing"]} in branches
+    guard = branches[1]["$and"][1]["$or"]
+    assert {"$eq": [True, False]} in guard          # incoming is provisional
+    assert {"$eq": ["$is_provisional", True]} in guard   # so the stored one must be too
+
+
+def test_alphas_use_their_own_collection_and_key():
+    store = []
+    frame = pd.DataFrame([{
+        "symbol": "AAPL", "event_date": "2026-07-24", "alpha_101": 0.25,
+        "computed_at_utc": "2026-07-25T00:00:00+00:00", "provisional": False,
+    }])
+    write_alphas(frame, database_factory=database_of(store, result=FakeResult(1)))
+    collection, _, operations, _ = store[0]
+    assert collection == ALPHA_COLLECTION
+    assert set(operations[0]._filter) == set(ALPHA_KEY)
+
+
+# --- counts, failures, plumbing -------------------------------------------
+
+def test_write_reports_what_actually_landed():
+    store = []
+    written = write_prices(
+        [PRICE_ROW, dict(PRICE_ROW, symbol="MSFT")],
+        database_of(store, result=FakeResult(upserted=1, modified=0)),
+    )
+    assert written == 1, "the row the primary feed already had is not counted"
+
+
+def test_empty_input_never_opens_a_connection():
+    def explode():
+        raise AssertionError("must not connect for an empty batch")
+
+    assert write_prices([], explode) == 0
+    assert write_indicators(pd.DataFrame(), database_factory=explode) == 0
+
+
+def test_duplicate_keys_are_the_policy_working_not_a_failure():
+    error = BulkWriteError({
+        "writeErrors": [{"code": 11000}], "nUpserted": 2, "nModified": 0,
+    })
+    assert write_prices([PRICE_ROW], database_of([], raises=error)) == 2
+
+
+def test_any_other_bulk_error_still_surfaces():
+    error = BulkWriteError({"writeErrors": [{"code": 121}], "nUpserted": 0})
+    with pytest.raises(BulkWriteError):
+        write_prices([PRICE_ROW], database_of([], raises=error))
+
+
+def test_unreachable_database_falls_back_instead_of_raising():
+    def explode():
+        raise RuntimeError("no route to host")
+
+    assert get_active_tickers(explode) is None
+
+
+def test_active_tickers_come_back_sorted_and_projected():
+    store = []
+    rows = [{"ticker": "AAPL"}, {"ticker": "MSFT"}]
+    assert get_active_tickers(database_of(store, rows=rows)) == ["AAPL", "MSFT"]
+    _, _, query, projection = store[0]
+    assert query == {"is_active": True} and projection == {"ticker": 1, "_id": 0}
+
+
+def test_an_empty_company_collection_reads_as_no_answer():
+    """[] and None mean different things to the caller: an empty universe
+    would collect nothing, so it falls back to the symbols file."""
+    assert get_active_tickers(database_of([], rows=[])) is None
+
+
+def test_every_conflict_key_gets_a_unique_index():
+    store = []
+    ensure_indexes(database_of(store))
+    unique = {
+        name: call[3]
+        for name, *call in [(c[0], *c) for c in store]
+        if call[1] == "create_index" and call[3].get("unique")
+    }
+    assert set(unique) == {
+        PRICE_COLLECTION, QUOTE_COLLECTION, INDICATOR_COLLECTION, ALPHA_COLLECTION,
+    }
+
+
+def test_run_records_carry_a_start_derived_from_latency():
+    store = []
+    record_run("ibkr_prices", 10, 5.0, "success", database_factory=database_of(store))
+    _, _, document = store[0]
+    assert document["records_ingested"] == 10 and document["status"] == "success"
+    assert (document["end_time"] - document["start_time"]).total_seconds() == 5.0
+
+
+def test_uri_is_built_from_parts_and_escapes_credentials(monkeypatch):
+    for key in ("MONGO_URI", "MONGO_USER", "MONGO_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MONGO_HOST", "db.internal")
+    monkeypatch.setenv("MONGO_PORT", "27018")
+    assert build_uri() == "mongodb://db.internal:27018/"
+
+    monkeypatch.setenv("MONGO_USER", "svc")
+    monkeypatch.setenv("MONGO_PASSWORD", "p@ss:word")
+    uri = build_uri()
+    assert "p%40ss%3Aword" in uri, "an unescaped password breaks the URI"
+    assert "authSource=admin" in uri
+
+
+def test_an_explicit_host_overrides_the_uri_so_a_tunnel_can_win(monkeypatch):
+    monkeypatch.setenv("MONGO_URI", "mongodb://db.internal:27017/")
+    monkeypatch.delenv("MONGO_USER", raising=False)
+    assert build_uri("127.0.0.1", 55001) == "mongodb://127.0.0.1:55001/"

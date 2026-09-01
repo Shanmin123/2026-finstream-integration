@@ -167,6 +167,55 @@ computation, which is what lets an intraday `is_provisional = TRUE` row be
 replaced in place by the end-of-day value). Daily bars go to the platform's
 existing `price_data` with `source='ibkr'`.
 
+## MongoDB
+
+The platform stores its shared datasets in MongoDB, so `pipeline/mongo_sink.py`
+is the MongoDB counterpart of the PostgreSQL sink. It writes the same four
+datasets, under the same field names, with the same conflict semantics:
+`price_data` and `quote_ticks` leave an existing document alone, and the two
+derived collections accept a newer computation but never let a provisional
+intraday value replace a final end-of-day one.
+
+The two sinks cannot drift. Every document is built by zipping a field-name
+tuple onto the row tuples `db_sink.py` already produces, so a mapper that grows
+a column raises rather than storing a document with a value dropped off the
+end.
+
+News is not written to either store: the platform defines no news collection,
+its news comes from the EODHD and GDELT pipelines, and this pipeline's news is
+a two-ticker sample. It is delivered as parquet.
+
+`scripts/load_to_mongo.py` moves the collected parquet into the database. It is
+separate from the collector because the parquet output stays valid whether or
+not a database is reachable, and a load can be re-run without re-contacting
+IBKR.
+
+```bash
+pip install ".[mongo]"
+python scripts/load_to_mongo.py --data-root data/output --dry-run   # counts only
+python scripts/load_to_mongo.py --data-root data/output
+```
+
+`--dry-run` reads and validates every file and reports what would be written
+without opening a connection. Every write is keyed and idempotent, so an
+interrupted load is resumed by running it again.
+
+Connection settings come from the environment, either `MONGO_URI` plus
+`MONGO_DB`, or `MONGO_HOST` / `MONGO_PORT` / `MONGO_USER` / `MONGO_PASSWORD` /
+`MONGO_DB`. When the database is only reachable through the bastion the
+platform already uses, `MONGO_SSH_TUNNEL=1` opens the same tunnel
+`utils/mongodb.py` opens, reading the platform's own variable names (`host`,
+`user`, `password`, `ssh_port`) plus `MONGO_REMOTE_HOST` and
+`MONGO_REMOTE_PORT` for the database port.
+
+A note on volume. The derived datasets keep the long `(name, value)` layout the
+SQL tables use, which is what lets a new indicator or alpha formula land
+without a migration. It also means a full load is large: roughly 0.8M price
+documents, 10.6M indicator documents and 6.5M alpha documents. A document per
+`(ticker, day)` holding a subdocument of values would be about a fifteenth of
+that; it is not what this writes, because the SQL contract is the one the
+submission documents. Say so and it is a small change.
+
 ## Universe note
 
 `symbols.sp500.csv` is a point-in-time snapshot (S&P 500 membership 2000-2025,
