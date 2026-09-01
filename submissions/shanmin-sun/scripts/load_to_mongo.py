@@ -150,8 +150,15 @@ def smoke_test(database_factory=get_database):
         second = write_prices(rows, database_factory)
         again = collection.count_documents({"ticker": SMOKE_TICKER})
     finally:
-        # Only the two documents this function wrote, by their exact keys.
-        removed = sum(collection.delete_one(key).deleted_count for key in keys)
+        # Only the two documents this function wrote, by their exact keys. A
+        # failure here must not replace the failure that brought us here: the
+        # reason the write failed is what the operator needs.
+        removed = 0
+        for key in keys:
+            try:
+                removed += collection.delete_one(key).deleted_count
+            except Exception:
+                logger.warning("smoke_cleanup_failed", exc_info=True)
     return {
         "wrote": first,
         "found": found,

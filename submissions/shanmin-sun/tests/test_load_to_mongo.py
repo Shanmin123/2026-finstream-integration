@@ -248,6 +248,22 @@ def test_the_smoke_test_cleans_up_even_when_the_write_fails(monkeypatch):
     assert collection.documents == []
 
 
+def test_a_failing_cleanup_does_not_hide_why_the_write_failed(monkeypatch):
+    """The reason the write failed is what the operator needs. A cleanup that
+    raises inside `finally` would replace it with a delete error."""
+
+    class Unremovable(SmokeCollection):
+        def delete_one(self, key):
+            raise RuntimeError("delete not permitted")
+
+    monkeypatch.setattr(
+        load_to_mongo, "write_prices",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("connection reset")),
+    )
+    with pytest.raises(RuntimeError, match="connection reset"):
+        load_to_mongo.smoke_test(lambda: SmokeDatabase(Unremovable([])))
+
+
 def test_data_root_is_only_required_for_a_real_load(capsys):
     code, out = run([], capsys)
     assert code == 1 and "--data-root is required" in json.loads(out.err)["error"]
