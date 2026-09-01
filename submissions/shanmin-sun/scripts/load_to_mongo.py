@@ -99,26 +99,25 @@ def load_dataset(dataset, root, batch_size, database_factory, dry_run):
     spec = DATASETS[dataset]
     files = parquet_files(root, dataset)
     if not files:
-        return {"dataset": dataset, "files": 0, "documents": 0, "written": 0,
-                "skipped": 0}
+        return {"dataset": dataset, "files": 0, "rows": 0, "documents": 0,
+                "written": 0}
 
-    documents = written = skipped = 0
+    rows = documents = written = 0
     for frame in batched(files, batch_size):
-        prepared = spec["documents"](frame)
-        # derived_documents drops NaN warm-up cells; the difference between the
-        # rows read and the documents built is reported rather than inferred.
-        expected = len(frame) if dataset == "prices" else None
-        documents += len(prepared)
-        if expected is not None:
-            skipped += expected - len(prepared)
+        rows += len(frame)
+        # Both counts are reported because they differ: prices are one
+        # document per row, while the derived datasets melt each row into one
+        # document per indicator or alpha, minus the NaN warm-up cells. A
+        # single count would hide a tenfold expansion.
+        documents += len(spec["documents"](frame))
         if not dry_run:
             written += spec["write"](frame, database_factory)
     return {
         "dataset": dataset,
         "files": len(files),
+        "rows": rows,
         "documents": documents,
         "written": written,
-        "skipped": skipped,
     }
 
 

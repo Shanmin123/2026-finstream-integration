@@ -52,6 +52,11 @@ def test_dry_run_counts_documents_without_connecting(dataset_root, capsys,
     counts = {d["dataset"]: d["documents"] for d in report["datasets"]}
     # 4 rows each; indicators carry two values per row, alphas one.
     assert counts == {"prices": 4, "indicators": 8, "alphas": 4}
+    # Rows are reported alongside, so the long-layout expansion is visible
+    # rather than looking like the loader invented documents.
+    assert {d["dataset"]: d["rows"] for d in report["datasets"]} == {
+        "prices": 4, "indicators": 4, "alphas": 4
+    }
 
 
 def test_a_real_run_writes_every_dataset_and_records_the_run(dataset_root, capsys,

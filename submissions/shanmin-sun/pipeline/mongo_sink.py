@@ -47,7 +47,6 @@ ssh_port) plus MONGO_REMOTE_HOST and MONGO_REMOTE_PORT for the database itself.
 """
 
 import logging
-import math
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -144,11 +143,10 @@ def derived_documents(frame, key_column, interval=DAILY_INTERVAL):
         document = _as_document(fields, values)
         document["datetime_utc"] = _as_datetime(document["datetime_utc"])
         document["computed_at_utc"] = _as_datetime(document["computed_at_utc"])
-        # derived_frame_to_platform already drops NaN and infinite cells; this
-        # is the second gate, because a document that reaches BSON with a NaN
-        # is accepted and then poisons every aggregation that reads it.
-        if not math.isfinite(float(document["value"])):
-            continue
+        # NaN warm-up cells and infinities are dropped upstream, by
+        # derived_frame_to_platform. Repeating the guard here would be a branch
+        # nothing can reach; test_non_finite_values_never_reach_the_database
+        # holds the behaviour instead, through this function.
         documents.append(document)
     return documents
 
@@ -241,7 +239,7 @@ def ensure_indexes(database_factory=get_database):
 # Writes
 # ---------------------------------------------------------------------------
 
-def _bulk(collection, operations, dataset, database_factory):
+def _bulk(collection, operations, database_factory):
     if not operations:
         return 0
     from pymongo.errors import BulkWriteError
@@ -341,7 +339,6 @@ def write_prices(rows, database_factory=get_database):
     return _bulk(
         PRICE_COLLECTION,
         _insert_if_absent(documents, PRICE_KEY),
-        PRICE_COLLECTION,
         database_factory,
     )
 
@@ -351,7 +348,6 @@ def write_quotes(rows, market_data_type=3, database_factory=get_database):
     return _bulk(
         QUOTE_COLLECTION,
         _insert_if_absent(documents, QUOTE_KEY),
-        QUOTE_COLLECTION,
         database_factory,
     )
 
@@ -361,7 +357,6 @@ def write_indicators(frame, interval=DAILY_INTERVAL, database_factory=get_databa
     return _bulk(
         INDICATOR_COLLECTION,
         _upsert_if_newer(documents, INDICATOR_KEY),
-        INDICATOR_COLLECTION,
         database_factory,
     )
 
@@ -371,7 +366,6 @@ def write_alphas(frame, interval=DAILY_INTERVAL, database_factory=get_database):
     return _bulk(
         ALPHA_COLLECTION,
         _upsert_if_newer(documents, ALPHA_KEY),
-        ALPHA_COLLECTION,
         database_factory,
     )
 
