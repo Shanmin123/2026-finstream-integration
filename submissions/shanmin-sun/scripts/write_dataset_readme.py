@@ -56,23 +56,55 @@ def survey(root, dataset):
             if key in parts:
                 per_year[parts[key][:4]] += 1
                 break
+    columns = pq.read_schema(files[0]).names
     column = DATE_COLUMN.get(dataset, "event_date")
-    first = last = None
-    for path in (files[0], files[-1]):
-        table = pq.read_table(path, columns=[column]).column(column).to_pylist()
-        if not table:
-            continue
-        low, high = str(min(table))[:10], str(max(table))[:10]
-        first = low if first is None else min(first, low)
-        last = high if last is None else max(last, high)
+    # The collection stamp, so a dataset copied in from an earlier run cannot
+    # sit beside a fresh one without saying so.
+    stamp = next((c for c in ("retrieved_at_utc", "computed_at_utc")
+                  if c in columns), None)
+    wanted = [c for c in (column, stamp) if c]
+    spans = {c: [None, None] for c in wanted}
+    # A few files at each end bound the span without reading every one; the
+    # partitions are date-ordered, so the extremes live there.
+    for path in (files[0], files[1] if len(files) > 1 else files[0], files[-1]):
+        table = pq.read_table(path, columns=wanted)
+        for name in wanted:
+            values = [str(v)[:10] for v in table.column(name).to_pylist() if v]
+            if not values:
+                continue
+            low, high = min(values), max(values)
+            spans[name][0] = low if spans[name][0] is None else min(spans[name][0], low)
+            spans[name][1] = high if spans[name][1] is None else max(spans[name][1], high)
     return {
         "files": len(files), "rows": rows, "symbols": len(symbols),
-        "years": sorted(per_year), "first": first, "last": last,
-        "columns": pq.read_schema(files[0]).names,
+        "years": sorted(per_year),
+        "first": spans[column][0], "last": spans[column][1],
+        "collected_first": spans[stamp][0] if stamp else None,
+        "collected_last": spans[stamp][1] if stamp else None,
+        "columns": columns,
     }
 
 
-def render(root, surveys, generated):
+def missing_from(symbols_file, root):
+    """Requested tickers with no partition, so a short delivery says so.
+
+    A dataset that reports the tickers it has cannot report the ones it does
+    not, and a reader comparing it against the S&P 500 finds the gap the hard
+    way.
+    """
+    if not symbols_file:
+        return []
+    wanted = []
+    for line in Path(symbols_file).read_text(encoding="utf-8").splitlines()[1:]:
+        ticker = line.strip().strip(",").strip()
+        if ticker:
+            wanted.append(ticker)
+    have = {d.name.split("=", 1)[1]
+            for d in (Path(root) / "prices").rglob("symbol=*") if d.is_dir()}
+    return sorted(set(wanted) - have)
+
+
+def render(root, surveys, generated, missing_symbols=()):
     lines = [
         "IBKR pipeline dataset",
         "=====================",
@@ -110,12 +142,22 @@ def render(root, surveys, generated):
         if found is None:
             lines += [f"{dataset}: not present in this delivery.", ""]
             continue
+        collected = ""
+        if found["collected_first"]:
+            when = (found["collected_first"]
+                    if found["collected_first"] == found["collected_last"]
+                    else f"{found['collected_first']} to {found['collected_last']}")
+            collected = f"  Collected {when}."
         lines += [
             f"{dataset}",
             f"  {DESCRIPTIONS[dataset]}",
             f"  {found['rows']:,} rows across {found['symbols']} symbols "
             f"in {found['files']:,} files.",
             f"  Covers {found['first']} to {found['last']}.",
+        ]
+        if collected:
+            lines.append(collected)
+        lines += [
             f"  Deduplication key: {KEYS[dataset]}.",
             f"  Columns: {', '.join(found['columns'])}.",
             "",
@@ -123,6 +165,16 @@ def render(root, surveys, generated):
 
     prices, news = surveys.get("prices"), surveys.get("news")
     lines += ["Limits", "------", ""]
+    if missing_symbols:
+        lines += [
+            f"{len(missing_symbols)} of the {len(missing_symbols) + prices['symbols']} "
+            "requested tickers are absent. IBKR answered each of them with",
+            "\"security definition not found\", which is what a ticker that has been",
+            "delisted or renamed returns. They are:",
+            "",
+            "  " + ", ".join(missing_symbols),
+            "",
+        ]
     if news and prices and news["symbols"] < prices["symbols"]:
         lines += [
             f"News covers {news['symbols']} symbols, not the "
@@ -176,6 +228,9 @@ def main(argv=None):
                         help="Where to write. Prints to stdout when omitted.")
     parser.add_argument("--generated", default=None,
                         help="Timestamp to stamp; defaults to now, UTC.")
+    parser.add_argument("--symbols-file", default=None,
+                        help="The universe that was requested, so the note can "
+                             "report which tickers are absent.")
     args = parser.parse_args(argv)
 
     root = Path(args.data_root)
@@ -186,7 +241,8 @@ def main(argv=None):
         raise SystemExit(f"{root} holds none of {', '.join(DATASETS)}")
 
     stamp = args.generated or datetime.now(timezone.utc).strftime("%d %B %Y")
-    text = render(root, surveys, stamp)
+    missing = missing_from(args.symbols_file, root) if surveys.get("prices") else []
+    text = render(root, surveys, stamp, missing)
     if args.out:
         args.out.write_text(text, encoding="utf-8")
         print(f"wrote {args.out} ({len(text.splitlines())} lines)")

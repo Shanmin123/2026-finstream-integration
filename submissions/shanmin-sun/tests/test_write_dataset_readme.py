@@ -49,6 +49,45 @@ def test_the_survey_counts_rows_symbols_and_the_span(dataset_root):
     assert "wap" in found["columns"]
 
 
+def test_the_survey_reports_when_the_data_was_collected(dataset_root):
+    """A dataset copied in from an earlier run must not sit beside a fresh one
+    without saying so; the retrieval stamp is what makes that visible."""
+    found = writer.survey(dataset_root, "prices")
+    assert found["collected_first"] == found["collected_last"] == "2026-09-01"
+
+
+def test_the_note_states_the_collection_date(dataset_root, capsys):
+    writer.main(["--data-root", str(dataset_root)])
+    assert "Collected 2026-09-01." in capsys.readouterr().out
+
+
+def test_a_dataset_with_no_stamp_column_omits_the_line(tmp_path, capsys):
+    directory = tmp_path / "prices" / "event_year=2025" / "symbol=AAPL"
+    directory.mkdir(parents=True)
+    pd.DataFrame([{"event_date": "2025-01-02", "symbol": "AAPL", "close": 1.0}]
+                 ).to_parquet(directory / "part-000.parquet", index=False)
+    found = writer.survey(tmp_path, "prices")
+    assert found["collected_first"] is None
+    writer.main(["--data-root", str(tmp_path)])
+    # The dataset lines are indented; the header's "Collected from Interactive
+    # Brokers" is not, and must not satisfy this.
+    assert "  Collected " not in capsys.readouterr().out
+
+
+def test_two_vintages_in_one_delivery_show_two_collection_dates(dataset_root,
+                                                                capsys):
+    """The case this exists for: news carried over from an earlier run."""
+    directory = dataset_root / "news" / "event_date=2026-05-01" / "symbol=AAPL"
+    for path in directory.rglob("*.parquet"):
+        frame = pd.read_parquet(path)
+        frame["retrieved_at_utc"] = "2026-07-25T00:00:00+00:00"
+        frame.to_parquet(path, index=False)
+    writer.main(["--data-root", str(dataset_root)])
+    text = capsys.readouterr().out
+    assert "Collected 2026-09-01." in text      # prices
+    assert "Collected 2026-07-25." in text      # news, from the earlier run
+
+
 def test_news_is_surveyed_on_its_own_date_column(dataset_root):
     """News partitions by event_date and carries published_at_utc, not
     event_date; surveying it with the price column would find nothing."""
@@ -119,6 +158,35 @@ def test_the_timestamp_can_be_pinned_so_the_note_is_reproducible(dataset_root,
                                                                  capsys):
     writer.main(["--data-root", str(dataset_root), "--generated", "01 January 2026"])
     assert "Written 01 January 2026." in capsys.readouterr().out
+
+
+def test_requested_tickers_with_no_data_are_named(dataset_root, tmp_path, capsys):
+    """A note that lists what it has cannot list what it lacks, and a reader
+    comparing it against the index finds the gap the hard way."""
+    symbols = tmp_path / "symbols.csv"
+    symbols.write_text("symbol\nAAPL\nMSFT\nDELISTED\nRENAMED\n", encoding="utf-8")
+    writer.main(["--data-root", str(dataset_root),
+                 "--symbols-file", str(symbols)])
+    text = capsys.readouterr().out
+    assert "2 of the 4 requested tickers are absent" in text
+    assert "DELISTED, RENAMED" in text
+    assert "delisted or renamed" in text
+
+
+def test_a_complete_delivery_says_nothing_about_missing_tickers(dataset_root,
+                                                                tmp_path,
+                                                                capsys):
+    symbols = tmp_path / "symbols.csv"
+    symbols.write_text("symbol\nAAPL\nMSFT\n", encoding="utf-8")
+    writer.main(["--data-root", str(dataset_root),
+                 "--symbols-file", str(symbols)])
+    assert "requested tickers are absent" not in capsys.readouterr().out
+
+
+def test_without_a_symbols_file_the_note_makes_no_coverage_claim(dataset_root,
+                                                                 capsys):
+    writer.main(["--data-root", str(dataset_root)])
+    assert "requested tickers are absent" not in capsys.readouterr().out
 
 
 def test_a_root_with_none_of_the_datasets_is_an_error(tmp_path):
