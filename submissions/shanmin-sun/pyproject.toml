@@ -17,7 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["psycopg2-binary==2.9.9"]
-mongo = ["pymongo==4.17.0", "sshtunnel==0.4.0"]
+# pymongo 4.11+ requires Python 3.9; the production stack is 3.8.
+mongo = ["pymongo==4.10.1", "sshtunnel==0.4.0"]
 
 [tool.setuptools]
 packages = ["pipeline"]

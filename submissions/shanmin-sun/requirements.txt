@@ -6,6 +6,11 @@ PyYAML==6.0.1
 
 # Optional: database sinks for the FinStream platform. The parquet datasets
 # are the primary output; the pipeline runs without either of these.
+#
+# pymongo is pinned to 4.10.1 because it is the last release that still allows
+# Python 3.8, which is what CONTRIBUTING pins the production stack to and what
+# this submission's CI installs. 4.11 onwards declare requires-python >=3.9 and
+# would fail the install step outright.
 psycopg2-binary==2.9.9
-pymongo==4.17.0
+pymongo==4.10.1
 sshtunnel==0.4.0
