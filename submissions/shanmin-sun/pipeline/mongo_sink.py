@@ -10,20 +10,16 @@ datasets, under the same field names, with the same conflict semantics:
     alpha_factors         long layout, one per (ticker, ms, alpha_id, interval, source)
 
 Field names and conflict keys come from db/init_postgres/ibkr_tables.sql and
-from the platform's own price_data contract, so a reader does not have to learn
-two vocabularies depending on which store it reads.
+from the platform's own price_data contract.
 
-The two sinks cannot drift. Every document here is built by zipping a field-name
-tuple onto the row tuples that :mod:`pipeline.db_sink` already produces, so a
-change to a mapper changes both stores at once and a field added on one side
-without the other raises rather than writing a half-populated document.
+Every document here is built by zipping a field-name tuple onto the row tuples
+:mod:`pipeline.db_sink` already produces, so one mapper feeds both stores and a
+length mismatch raises.
 
 Conflict policy, mirroring the SQL:
 
   * price_data and quote_ticks are immutable observations. An existing document
-    wins and the write reports how many were actually inserted, so this feed
-    reads as the gap filler it is rather than silently overwriting a primary
-    feed.
+    wins, and the write reports how many were actually inserted.
   * technical_indicators and alpha_factors are recomputable. A newer
     computation replaces an older one, and a provisional intraday value never
     replaces a final end-of-day value.
@@ -47,8 +43,7 @@ set MONGO_SSH_TUNNEL=1 and the sink opens the same tunnel utils/mongodb.py
 opens, reading the platform's own variable names (host, user, password,
 ssh_port) plus MONGO_REMOTE_HOST and MONGO_REMOTE_PORT for the database itself.
 
-Collection names are overridable too; see the constants below for the one that
-collides with another submission and why its default is source-scoped.
+Collection names are overridable; see the constants below.
 """
 
 import logging
@@ -65,24 +60,13 @@ from pipeline.db_sink import (
 
 logger = logging.getLogger("ibkr_pipeline")
 
-# Collection names, each overridable, because one of them collides.
+# Collection names, each overridable by the matching environment variable.
 #
-# price_data is the platform's own contract and this feed is deliberately a gap
-# filler in it, so it keeps that name. quote_ticks and alpha_factors are this
-# pipeline's own datasets and collide with nothing.
-#
-# technical_indicators does collide. The fundamentals submission writes EODHD
-# indicators there in a WIDE layout keyed on (ticker, timestamp_ms, interval),
-# with the source under metadata.source. This pipeline writes a LONG layout
-# keyed on (ticker, timestamp_ms, indicator_name, interval, source), mirroring
-# the SQL tables. The two cannot share a collection: their key does not include
-# a source, so an IBKR value for a ticker-day would overwrite the EODHD one,
-# and the two document shapes would sit side by side in the same collection.
-#
-# So the default is a source-scoped name and pointing this at the shared
-# collection is an explicit choice, not something a first run does by accident.
-# Whether the platform wants one indicators collection with source in its key is
-# the platform owner's decision, not this pipeline's.
+# technical_indicators is taken: the fundamentals submission writes EODHD
+# indicators there in a wide layout keyed on (ticker, timestamp_ms, interval),
+# which has no source in it, so an IBKR value for a ticker-day would overwrite
+# theirs. The default here is source-scoped. See README, "One collection name
+# collides".
 PRICE_COLLECTION = os.environ.get("MONGO_PRICE_COLLECTION", "price_data")
 QUOTE_COLLECTION = os.environ.get("MONGO_QUOTE_COLLECTION", "quote_ticks")
 INDICATOR_COLLECTION = os.environ.get(
@@ -168,10 +152,8 @@ def derived_documents(frame, key_column, interval=DAILY_INTERVAL):
         document = _as_document(fields, values)
         document["datetime_utc"] = _as_datetime(document["datetime_utc"])
         document["computed_at_utc"] = _as_datetime(document["computed_at_utc"])
-        # NaN warm-up cells and infinities are dropped upstream, by
-        # derived_frame_to_platform. Repeating the guard here would be a branch
-        # nothing can reach; test_non_finite_values_never_reach_the_database
-        # holds the behaviour instead, through this function.
+        # NaN warm-up cells and infinities are dropped by
+        # derived_frame_to_platform, upstream of here.
         documents.append(document)
     return documents
 
