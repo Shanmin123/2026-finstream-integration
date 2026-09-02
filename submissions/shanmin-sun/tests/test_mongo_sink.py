@@ -212,6 +212,27 @@ def test_derived_writes_are_guarded_pipeline_updates():
     assert all("$cond" in expression for expression in stage.values())
 
 
+def test_the_newer_computation_wins_and_not_the_older_one():
+    """The direction of the timestamp comparison, pinned on its own.
+
+    The structural test above passes whichever way it points, and an inverted
+    guard is silent: stale values would overwrite fresh ones and every write
+    would still report success.
+    """
+    store = []
+    frame = indicator_frame(computed="2026-07-25T00:00:00+00:00")
+    write_indicators(
+        frame, database_factory=database_of(store, result=FakeResult(1))
+    )
+    incoming = derived_documents(frame, "indicator_name")[0]["computed_at_utc"]
+    condition = store[0][2][0]._doc[0]["$set"]["value"]["$cond"][0]
+    newer = condition["$or"][1]["$and"][0]
+    assert newer == {"$gte": [incoming, "$computed_at_utc"]}, (
+        "the incoming stamp must be on the left of $gte: the write applies when "
+        f"the incoming computation is the newer one, got {newer}"
+    )
+
+
 def test_a_provisional_value_cannot_replace_a_final_one():
     store = []
     write_indicators(
