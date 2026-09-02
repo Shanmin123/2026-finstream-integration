@@ -213,13 +213,43 @@ has not been exercised against a live MongoDB**, because no credentials for the
 platform's database have been issued to this submission yet. `--smoke-test` is
 the first thing to run when they are.
 
-Connection settings come from the environment, either `MONGO_URI` plus
-`MONGO_DB`, or `MONGO_HOST` / `MONGO_PORT` / `MONGO_USER` / `MONGO_PASSWORD` /
-`MONGO_DB`. When the database is only reachable through the bastion the
-platform already uses, `MONGO_SSH_TUNNEL=1` opens the same tunnel
-`utils/mongodb.py` opens, reading the platform's own variable names (`host`,
-`user`, `password`, `ssh_port`) plus `MONGO_REMOTE_HOST` and
-`MONGO_REMOTE_PORT` for the database port.
+Connection settings come from the environment, and the defaults match what the
+other submissions configure: `localhost:27017`, database `financial_db`, no
+authentication. Override with `MONGO_URI` plus `MONGO_DB`, or with
+`MONGO_HOST` / `MONGO_PORT` / `MONGO_USER` / `MONGO_PASSWORD` / `MONGO_DB`.
+When the database is only reachable through the bastion the platform already
+uses, `MONGO_SSH_TUNNEL=1` opens the same tunnel `utils/mongodb.py` opens,
+reading the platform's own variable names (`host`, `user`, `password`,
+`ssh_port`) plus `MONGO_REMOTE_HOST` and `MONGO_REMOTE_PORT` for the database
+port.
+
+### One collection name collides
+
+The fundamentals submission writes EODHD indicators to `technical_indicators`
+in a **wide** layout, one document per ticker-day, keyed on
+`(ticker, timestamp_ms, interval)` with the source under `metadata.source`.
+This pipeline writes a **long** layout, one document per indicator value, keyed
+on `(ticker, timestamp_ms, indicator_name, interval, source)`, mirroring the
+SQL tables.
+
+The two cannot share a collection. Their key has no source in it, so an IBKR
+value for a ticker-day would overwrite the EODHD one; and the two document
+shapes would sit side by side in the same place.
+
+So this pipeline's default is `ibkr_technical_indicators`, and pointing it at
+the shared collection is an explicit choice rather than what a first run does by
+accident:
+
+```bash
+MONGO_INDICATOR_COLLECTION=technical_indicators python scripts/load_to_mongo.py ...
+```
+
+Whether the platform wants one indicators collection, with a source in its key,
+is the platform owner's decision. Every collection name is overridable:
+`MONGO_PRICE_COLLECTION`, `MONGO_QUOTE_COLLECTION`,
+`MONGO_INDICATOR_COLLECTION`, `MONGO_ALPHA_COLLECTION`. `price_data` keeps its
+name deliberately: it is the platform's own contract and this feed is a gap
+filler in it.
 
 A note on volume. The derived datasets keep the long `(name, value)` layout the
 SQL tables use, which is what lets a new indicator or alpha formula land

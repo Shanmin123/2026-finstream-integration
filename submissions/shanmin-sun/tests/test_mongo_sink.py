@@ -313,6 +313,40 @@ def test_run_records_carry_a_start_derived_from_latency():
     assert (document["end_time"] - document["start_time"]).total_seconds() == 5.0
 
 
+def test_the_indicator_collection_does_not_default_to_the_shared_one():
+    """The fundamentals submission writes EODHD indicators to
+    technical_indicators in a wide layout keyed without a source, so an IBKR
+    value for a ticker-day would overwrite one of theirs. Pointing this at that
+    collection has to be a decision, not what a first run does."""
+    assert INDICATOR_COLLECTION != "technical_indicators"
+    assert INDICATOR_COLLECTION.startswith("ibkr")
+
+
+def test_every_collection_name_can_be_overridden(monkeypatch):
+    """The platform owner may want one indicators collection after all."""
+    import importlib
+
+    import pipeline.mongo_sink as sink
+
+    monkeypatch.setenv("MONGO_INDICATOR_COLLECTION", "technical_indicators")
+    monkeypatch.setenv("MONGO_PRICE_COLLECTION", "somewhere_else")
+    reloaded = importlib.reload(sink)
+    try:
+        assert reloaded.INDICATOR_COLLECTION == "technical_indicators"
+        assert reloaded.PRICE_COLLECTION == "somewhere_else"
+    finally:
+        monkeypatch.delenv("MONGO_INDICATOR_COLLECTION")
+        monkeypatch.delenv("MONGO_PRICE_COLLECTION")
+        importlib.reload(sink)
+
+
+def test_the_database_default_is_the_one_the_project_configures(monkeypatch):
+    for key in ("MONGO_URI", "MONGO_USER", "MONGO_PASSWORD", "MONGO_DB",
+                "MONGO_HOST", "MONGO_PORT"):
+        monkeypatch.delenv(key, raising=False)
+    assert build_uri() == "mongodb://localhost:27017/"
+
+
 def test_uri_is_built_from_parts_and_escapes_credentials(monkeypatch):
     for key in ("MONGO_URI", "MONGO_USER", "MONGO_PASSWORD"):
         monkeypatch.delenv(key, raising=False)

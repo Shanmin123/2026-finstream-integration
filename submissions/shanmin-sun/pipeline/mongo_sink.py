@@ -31,10 +31,12 @@ Conflict policy, mirroring the SQL:
 pymongo is an optional dependency. The parquet datasets stay the primary output
 and the pipeline runs without any database.
 
-Connection settings come from the environment. Either give a full URI::
+Connection settings come from the environment, and the defaults match what the
+other submissions configure: localhost:27017, database financial_db, no
+authentication. Override with either a full URI::
 
     MONGO_URI=mongodb://user:pass@host:27017/?authSource=admin
-    MONGO_DB=financial_data
+    MONGO_DB=financial_db
 
 or the parts::
 
@@ -44,6 +46,9 @@ When MongoDB is only reachable through the bastion the platform already uses,
 set MONGO_SSH_TUNNEL=1 and the sink opens the same tunnel utils/mongodb.py
 opens, reading the platform's own variable names (host, user, password,
 ssh_port) plus MONGO_REMOTE_HOST and MONGO_REMOTE_PORT for the database itself.
+
+Collection names are overridable too; see the constants below for the one that
+collides with another submission and why its default is source-scoped.
 """
 
 import logging
@@ -60,12 +65,32 @@ from pipeline.db_sink import (
 
 logger = logging.getLogger("ibkr_pipeline")
 
-PRICE_COLLECTION = "price_data"
-QUOTE_COLLECTION = "quote_ticks"
-INDICATOR_COLLECTION = "technical_indicators"
-ALPHA_COLLECTION = "alpha_factors"
-RUN_COLLECTION = "pipeline_runs"
-COMPANY_COLLECTION = "companies"
+# Collection names, each overridable, because one of them collides.
+#
+# price_data is the platform's own contract and this feed is deliberately a gap
+# filler in it, so it keeps that name. quote_ticks and alpha_factors are this
+# pipeline's own datasets and collide with nothing.
+#
+# technical_indicators does collide. The fundamentals submission writes EODHD
+# indicators there in a WIDE layout keyed on (ticker, timestamp_ms, interval),
+# with the source under metadata.source. This pipeline writes a LONG layout
+# keyed on (ticker, timestamp_ms, indicator_name, interval, source), mirroring
+# the SQL tables. The two cannot share a collection: their key does not include
+# a source, so an IBKR value for a ticker-day would overwrite the EODHD one,
+# and the two document shapes would sit side by side in the same collection.
+#
+# So the default is a source-scoped name and pointing this at the shared
+# collection is an explicit choice, not something a first run does by accident.
+# Whether the platform wants one indicators collection with source in its key is
+# the platform owner's decision, not this pipeline's.
+PRICE_COLLECTION = os.environ.get("MONGO_PRICE_COLLECTION", "price_data")
+QUOTE_COLLECTION = os.environ.get("MONGO_QUOTE_COLLECTION", "quote_ticks")
+INDICATOR_COLLECTION = os.environ.get(
+    "MONGO_INDICATOR_COLLECTION", "ibkr_technical_indicators"
+)
+ALPHA_COLLECTION = os.environ.get("MONGO_ALPHA_COLLECTION", "alpha_factors")
+RUN_COLLECTION = os.environ.get("MONGO_RUN_COLLECTION", "pipeline_runs")
+COMPANY_COLLECTION = os.environ.get("MONGO_COMPANY_COLLECTION", "companies")
 
 # Field order matches the tuples db_sink builds, which in turn match the SQL
 # column order. Zipping the two is what keeps the stores identical.
@@ -208,7 +233,8 @@ def get_database():
         serverSelectionTimeoutMS=int(os.environ.get("MONGO_TIMEOUT_MS", 15000)),
         tz_aware=True,
     )
-    return client[os.environ.get("MONGO_DB", "financial_data")]
+    # financial_db is the database the other submissions' configs name.
+    return client[os.environ.get("MONGO_DB", "financial_db")]
 
 
 def ensure_indexes(database_factory=get_database):
