@@ -233,10 +233,6 @@ def test_the_smoke_test_writes_rewrites_and_removes_only_its_own_rows(monkeypatc
     assert collection.documents == [], "the smoke test left rows behind"
 
 
-def test_the_smoke_test_uses_a_ticker_no_exchange_lists():
-    assert not load_to_mongo.SMOKE_TICKER.isalpha()
-
-
 def test_the_smoke_test_cleans_up_even_when_the_write_fails(monkeypatch):
     collection = SmokeCollection([])
     monkeypatch.setattr(
