@@ -207,11 +207,16 @@ identical write adds nothing, removes exactly what it wrote, and reports. That
 turns the first live contact into ten seconds rather than several million
 documents.
 
-The sinks and the loader are covered by unit tests against injected fakes, and
-the parquet side of the loader runs against the real datasets. **The write path
-has not been exercised against a live MongoDB**, because no credentials for the
-platform's database have been issued to this submission yet. `--smoke-test` is
-the first thing to run when they are.
+`tests/test_live_mongo.py` runs the conflict policies against a real server and
+skips when none is reachable, the same way `test_live_mixed_run.py` skips
+without a Gateway. It has been run against MongoDB 7.0: the pipeline update is
+accepted, a newer computation replaces an older one, an older one is rejected, a
+provisional value cannot replace a final one, an existing bar is left alone and
+the write reports nothing landed, dates are stored as dates, and the conflict
+keys are enforced by unique indexes. A subset load of 25,736 documents was
+re-run and changed nothing.
+
+    MONGO_HOST=127.0.0.1 MONGO_PORT=27017 python -m pytest tests/test_live_mongo.py -v
 
 Connection settings come from the environment, and the defaults match what the
 other submissions configure: `localhost:27017`, database `financial_db`, no
