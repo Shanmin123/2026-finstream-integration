@@ -162,28 +162,60 @@ def derived_documents(frame, key_column, interval=DAILY_INTERVAL):
 # Connection
 # ---------------------------------------------------------------------------
 
-_TUNNELS = []
+# One tunnel and one client per distinct set of connection settings. Every
+# write asks for a database, and a full load makes tens of those calls; without
+# this each one would open its own client, and under MONGO_SSH_TUNNEL its own
+# SSH tunnel, none of them closed.
+_TUNNELS = {}
+_CLIENTS = {}
+
+
+def _tunnel_settings():
+    return (
+        os.environ["host"], int(os.environ.get("ssh_port", 22)),
+        os.environ["user"], os.environ["password"],
+        os.environ.get("MONGO_REMOTE_HOST", "127.0.0.1"),
+        int(os.environ.get("MONGO_REMOTE_PORT", 27017)),
+        int(os.environ.get("local_port", 0)),
+    )
 
 
 def _open_tunnel():
-    """Open the bastion tunnel the platform's own client opens, for the
-    database port rather than the API port. Returns (host, port)."""
+    """The bastion tunnel the platform's own client opens, for the database
+    port rather than the API port. Returns (host, port)."""
     from sshtunnel import SSHTunnelForwarder
 
-    remote_host = os.environ.get("MONGO_REMOTE_HOST", "127.0.0.1")
-    remote_port = int(os.environ.get("MONGO_REMOTE_PORT", 27017))
-    tunnel = SSHTunnelForwarder(
-        (os.environ["host"], int(os.environ.get("ssh_port", 22))),
-        ssh_username=os.environ["user"],
-        ssh_password=os.environ["password"],
-        remote_bind_address=(remote_host, remote_port),
-        local_bind_address=("127.0.0.1", int(os.environ.get("local_port", 0))),
-    )
-    tunnel.start()
-    # Held for the process lifetime: pymongo reconnects lazily, so a tunnel
-    # closed after the first write would break the second one.
-    _TUNNELS.append(tunnel)
+    key = _tunnel_settings()
+    tunnel = _TUNNELS.get(key)
+    if tunnel is None or not tunnel.is_active:
+        host, ssh_port, user, password, remote_host, remote_port, local_port = key
+        tunnel = SSHTunnelForwarder(
+            (host, ssh_port),
+            ssh_username=user,
+            ssh_password=password,
+            remote_bind_address=(remote_host, remote_port),
+            local_bind_address=("127.0.0.1", local_port),
+        )
+        tunnel.start()
+        _TUNNELS[key] = tunnel
     return "127.0.0.1", tunnel.local_bind_port
+
+
+def close_connections():
+    """Drop the cached client and tunnel. For tests and long-lived processes;
+    a one-shot load can let the interpreter do it."""
+    for client in _CLIENTS.values():
+        try:
+            client.close()
+        except Exception:
+            logger.warning("client_close_failed", exc_info=True)
+    _CLIENTS.clear()
+    for tunnel in _TUNNELS.values():
+        try:
+            tunnel.stop()
+        except Exception:
+            logger.warning("tunnel_stop_failed", exc_info=True)
+    _TUNNELS.clear()
 
 
 def build_uri(host=None, port=None):
@@ -204,17 +236,25 @@ def build_uri(host=None, port=None):
 
 
 def get_database():
-    """The platform database. Raises rather than returning a broken handle."""
+    """The platform database. Raises rather than returning a broken handle.
+
+    The client is cached on its connection settings, so changing the
+    environment gives a new one and repeated calls under the same settings
+    share a connection pool.
+    """
     import pymongo
 
     host = port = None
     if os.environ.get("MONGO_SSH_TUNNEL", "").strip().lower() in {"1", "true", "yes"}:
         host, port = _open_tunnel()
-    client = pymongo.MongoClient(
-        build_uri(host, port),
-        serverSelectionTimeoutMS=int(os.environ.get("MONGO_TIMEOUT_MS", 15000)),
-        tz_aware=True,
-    )
+    uri = build_uri(host, port)
+    timeout = int(os.environ.get("MONGO_TIMEOUT_MS", 15000))
+    key = (uri, timeout)
+    client = _CLIENTS.get(key)
+    if client is None:
+        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=timeout,
+                                     tz_aware=True)
+        _CLIENTS[key] = client
     # financial_db is the database the other submissions' configs name.
     return client[os.environ.get("MONGO_DB", "financial_db")]
 

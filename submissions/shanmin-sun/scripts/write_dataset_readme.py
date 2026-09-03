@@ -64,17 +64,23 @@ def survey(root, dataset):
                   if c in columns), None)
     wanted = [c for c in (column, stamp) if c]
     spans = {c: [None, None] for c in wanted}
-    # A few files at each end bound the span without reading every one; the
-    # partitions are date-ordered, so the extremes live there.
-    for path in (files[0], files[1] if len(files) > 1 else files[0], files[-1]):
-        table = pq.read_table(path, columns=wanted)
-        for name in wanted:
-            values = [str(v)[:10] for v in table.column(name).to_pylist() if v]
-            if not values:
-                continue
-            low, high = min(values), max(values)
-            spans[name][0] = low if spans[name][0] is None else min(spans[name][0], low)
-            spans[name][1] = high if spans[name][1] is None else max(spans[name][1], high)
+    # Every file, from its column statistics rather than its rows. Sampling the
+    # ends would be faster and wrong: files sort by year then symbol, and inside
+    # a year the symbols start on different dates, so the earliest date need not
+    # be in the first file. This note is a claim about someone else's data.
+    for path in files:
+        metadata = pq.read_metadata(path)
+        for group in range(metadata.num_row_groups):
+            row_group = metadata.row_group(group)
+            for index in range(row_group.num_columns):
+                col = row_group.column(index)
+                name = col.path_in_schema
+                if name not in wanted or col.statistics is None:
+                    continue
+                low = str(col.statistics.min)[:10]
+                high = str(col.statistics.max)[:10]
+                spans[name][0] = low if spans[name][0] is None else min(spans[name][0], low)
+                spans[name][1] = high if spans[name][1] is None else max(spans[name][1], high)
     return {
         "files": len(files), "rows": rows, "symbols": len(symbols),
         "years": sorted(per_year),

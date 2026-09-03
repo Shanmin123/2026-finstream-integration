@@ -2,7 +2,16 @@ from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-from pyspark.sql import SparkSession
+import pytest
+
+# The pipeline writes parquet with pyarrow and never imports Spark, so pyspark
+# is not in requirements.txt. This module checks that the platform's Spark can
+# read what the pipeline wrote, which is only answerable where Spark is
+# installed. Importing it at module scope would abort collection of the whole
+# suite on a machine without it, leaving every other test unrun.
+SparkSession = pytest.importorskip(
+    "pyspark.sql", reason="pyspark is not installed; install pyspark==3.5.1 to run it"
+).SparkSession
 
 from pipeline.features import compute_alphas, compute_indicators
 from pipeline.storage import LayeredStorage

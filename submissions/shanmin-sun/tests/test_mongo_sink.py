@@ -350,6 +350,43 @@ def test_the_database_default_is_the_one_the_project_configures(monkeypatch):
     assert build_uri() == "mongodb://localhost:27017/"
 
 
+def test_one_client_serves_every_write(monkeypatch):
+    """A full load calls get_database once per batch, tens of times. Each call
+    building its own client leaks connection pools, and under MONGO_SSH_TUNNEL
+    its own SSH tunnel with it."""
+    import pipeline.mongo_sink as sink
+
+    sink._CLIENTS.clear()
+    for key in ("MONGO_URI", "MONGO_SSH_TUNNEL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MONGO_HOST", "db.internal")
+
+    made = []
+
+    class FakeClient(dict):
+        def __init__(self, uri, **kwargs):
+            made.append(uri)
+            super().__init__()
+
+        def __getitem__(self, name):
+            return name
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "pymongo",
+        type("m", (), {"MongoClient": FakeClient})(),
+    )
+    try:
+        for _ in range(5):
+            sink.get_database()
+        assert len(made) == 1, f"built {len(made)} clients for the same settings"
+
+        monkeypatch.setenv("MONGO_HOST", "somewhere.else")
+        sink.get_database()
+        assert len(made) == 2, "changing the settings must give a new client"
+    finally:
+        sink._CLIENTS.clear()
+
+
 def test_uri_is_built_from_parts_and_escapes_credentials(monkeypatch):
     for key in ("MONGO_URI", "MONGO_USER", "MONGO_PASSWORD"):
         monkeypatch.delenv(key, raising=False)

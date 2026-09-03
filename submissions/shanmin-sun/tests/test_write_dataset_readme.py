@@ -49,6 +49,24 @@ def test_the_survey_counts_rows_symbols_and_the_span(dataset_root):
     assert "wap" in found["columns"]
 
 
+def test_the_span_covers_files_the_ends_would_miss(tmp_path):
+    """Files sort by year then symbol, and inside a year symbols start on
+    different dates, so the earliest date need not sit in the first file.
+    Sampling the ends would report a span narrower than the data."""
+    build(tmp_path, "prices", {
+        ("2025", "AAA"): price_frame("AAA", ["2025-06-01"]),
+        ("2025", "BBB"): price_frame("BBB", ["2025-06-02"]),
+        # Third of five: neither end, and not the second file either, so a
+        # survey that samples the extremes never opens it.
+        ("2025", "CCC"): price_frame("CCC", ["2025-01-02"]),
+        ("2025", "DDD"): price_frame("DDD", ["2025-06-03"]),
+        ("2026", "ZZZ"): price_frame("ZZZ", ["2026-11-30"]),
+    })
+    found = writer.survey(tmp_path, "prices")
+    assert found["first"] == "2025-01-02", "the earliest date is in the middle"
+    assert found["last"] == "2026-11-30"
+
+
 def test_the_survey_reports_when_the_data_was_collected(dataset_root):
     """A dataset copied in from an earlier run must not sit beside a fresh one
     without saying so; the retrieval stamp is what makes that visible."""
