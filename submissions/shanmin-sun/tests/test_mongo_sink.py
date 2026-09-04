@@ -18,7 +18,6 @@ from pipeline.mongo_sink import (
     build_uri,
     derived_documents,
     ensure_indexes,
-    get_active_tickers,
     price_documents,
     record_run,
     write_alphas,
@@ -290,27 +289,6 @@ def test_any_other_bulk_error_still_surfaces():
     error = BulkWriteError({"writeErrors": [{"code": 121}], "nUpserted": 0})
     with pytest.raises(BulkWriteError):
         write_prices([PRICE_ROW], database_of([], raises=error))
-
-
-def test_unreachable_database_falls_back_instead_of_raising():
-    def explode():
-        raise RuntimeError("no route to host")
-
-    assert get_active_tickers(explode) is None
-
-
-def test_active_tickers_come_back_sorted_and_projected():
-    store = []
-    rows = [{"ticker": "AAPL"}, {"ticker": "MSFT"}]
-    assert get_active_tickers(database_of(store, rows=rows)) == ["AAPL", "MSFT"]
-    _, _, query, projection = store[0]
-    assert query == {"is_active": True} and projection == {"ticker": 1, "_id": 0}
-
-
-def test_an_empty_company_collection_reads_as_no_answer():
-    """[] and None mean different things to the caller: an empty universe
-    would collect nothing, so it falls back to the symbols file."""
-    assert get_active_tickers(database_of([], rows=[])) is None
 
 
 def test_every_conflict_key_gets_a_unique_index():

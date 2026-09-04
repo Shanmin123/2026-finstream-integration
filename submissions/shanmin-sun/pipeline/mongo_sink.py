@@ -74,7 +74,6 @@ INDICATOR_COLLECTION = os.environ.get(
 )
 ALPHA_COLLECTION = os.environ.get("MONGO_ALPHA_COLLECTION", "alpha_factors")
 RUN_COLLECTION = os.environ.get("MONGO_RUN_COLLECTION", "pipeline_runs")
-COMPANY_COLLECTION = os.environ.get("MONGO_COMPANY_COLLECTION", "companies")
 
 # Field order matches the tuples db_sink builds, which in turn match the SQL
 # column order. Zipping the two is what keeps the stores identical.
@@ -427,26 +426,3 @@ def record_run(dag_id, records, latency_seconds, status, error=None,
             "source": SOURCE,
         }
     )
-
-
-def get_active_tickers(database_factory=get_database):
-    """Active tickers from the platform, so DAGs do not hardcode a universe.
-
-    Returns None when the database is unreachable, which lets the caller fall
-    back to the configured symbols file exactly as the SQL sink does.
-    """
-    try:
-        database = database_factory()
-        cursor = database[COMPANY_COLLECTION].find(
-            {"is_active": True}, {"ticker": 1, "_id": 0}
-        ).sort("ticker", 1)
-        tickers = [row["ticker"] for row in cursor if row.get("ticker")]
-    except Exception as exc:
-        # An auth failure, bad DNS and a stopped database each need different
-        # operator action, so the reason is logged rather than swallowed.
-        logger.warning(
-            "db_unavailable: %s", exc,
-            extra={"dataset": COMPANY_COLLECTION, "symbol": "*", "rows": 0},
-        )
-        return None
-    return tickers or None
