@@ -13,6 +13,7 @@ from pipeline.mongo_sink import (
     PRICE_COLLECTION,
     PRICE_KEY,
     QUOTE_COLLECTION,
+    QUOTE_KEY,
     FieldContractError,
     build_uri,
     derived_documents,
@@ -404,3 +405,43 @@ def test_an_explicit_host_overrides_the_uri_so_a_tunnel_can_win(monkeypatch):
     monkeypatch.setenv("MONGO_URI", "mongodb://db.internal:27017/")
     monkeypatch.delenv("MONGO_USER", raising=False)
     assert build_uri("127.0.0.1", 55001) == "mongodb://127.0.0.1:55001/"
+
+
+def test_the_conflict_key_is_the_same_in_all_three_places():
+    """The delivery rests on one claim: every write is keyed and idempotent, on
+    both stores. That key is written down three times -- the PRIMARY KEY in the
+    DDL an operator runs, the ON CONFLICT clause in the SQL sink, and the index
+    tuple in the Mongo sink. Each is tested on its own, so one could be changed
+    without the others and both suites would stay green, leaving one store
+    silently duplicating rows.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    ddl = (root / "pipeline" / "db" / "init_postgres" / "ibkr_tables.sql").read_text(
+        encoding="utf-8"
+    )
+    sink = (root / "pipeline" / "db_sink.py").read_text(encoding="utf-8")
+
+    def keys(text, pattern):
+        return {
+            tuple(c.strip() for c in match.split(","))
+            for match in re.findall(pattern, text)
+        }
+
+    declared = keys(ddl, r"PRIMARY KEY \(([^)]*)\)")
+    conflicts = keys(sink, r"ON CONFLICT \(([^)]*)\)")
+
+    # The derived sinks build one statement with {key} substituted, so the
+    # literal in the source carries the placeholder rather than the column.
+    for name, key in (("indicator_name", INDICATOR_KEY), ("alpha_id", ALPHA_KEY)):
+        assert key in declared, f"{name} key is not the DDL primary key"
+        assert tuple(c.replace("{key}", name) for c in next(
+            c for c in conflicts if "{key}" in c
+        )) == key, f"{name} key is not the ON CONFLICT target"
+
+    assert QUOTE_KEY in declared, "quote key is not the DDL primary key"
+    assert QUOTE_KEY in conflicts, "quote key is not the ON CONFLICT target"
+    # price_data is the platform's own table, so only the sink declares it here.
+    assert PRICE_KEY in conflicts, "price key is not the ON CONFLICT target"
