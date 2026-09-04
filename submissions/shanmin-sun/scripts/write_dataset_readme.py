@@ -53,16 +53,6 @@ def survey(root, dataset):
     files = sorted(base.rglob("*.parquet"))
     if not files:
         return None
-    rows, symbols, per_year = 0, set(), collections.Counter()
-    for path in files:
-        rows += pq.read_metadata(path).num_rows
-        parts = {p.split("=")[0]: p.split("=")[1] for p in path.parts if "=" in p}
-        if "symbol" in parts:
-            symbols.add(parts["symbol"])
-        for key in ("event_year", "event_date"):
-            if key in parts:
-                per_year[parts[key][:4]] += 1
-                break
     columns = pq.read_schema(files[0]).names
     column = DATE_COLUMN.get(dataset, "event_date")
     # The collection stamp, so a dataset copied in from an earlier run cannot
@@ -70,6 +60,8 @@ def survey(root, dataset):
     stamp = next((c for c in ("retrieved_at_utc", "computed_at_utc")
                   if c in columns), None)
     wanted = [c for c in (column, stamp) if c]
+
+    rows, symbols = 0, set()
     spans = {c: [None, None] for c in wanted}
     # Every file, not a sample of them: files sort by year then symbol, and
     # inside a year the symbols start on different dates, so the earliest date
@@ -77,6 +69,10 @@ def survey(root, dataset):
     # data, so it is read from all of it.
     for path in files:
         metadata = pq.read_metadata(path)
+        rows += metadata.num_rows
+        parts = {p.split("=")[0]: p.split("=")[1] for p in path.parts if "=" in p}
+        if "symbol" in parts:
+            symbols.add(parts["symbol"])
         present = set(metadata.schema.names) & set(wanted)
         counted = collections.Counter()
         for group in range(metadata.num_row_groups):
@@ -102,7 +98,6 @@ def survey(root, dataset):
                     _widen(spans[name], min(values), max(values))
     return {
         "files": len(files), "rows": rows, "symbols": len(symbols),
-        "years": sorted(per_year),
         "first": spans[column][0], "last": spans[column][1],
         "collected_first": spans[stamp][0] if stamp else None,
         "collected_last": spans[stamp][1] if stamp else None,

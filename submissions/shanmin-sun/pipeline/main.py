@@ -61,6 +61,18 @@ def build_runner(config):
     return PipelineRunner(config, client, storage, checkpoint)
 
 
+def _fail(exc):
+    """The machine-readable stderr contract. Setup failures (missing config,
+    unwritable log dir) and command failures report the same shape, not a
+    traceback."""
+    print(
+        json.dumps({"status": "failed", "error": str(exc),
+                    "type": type(exc).__name__}),
+        file=sys.stderr,
+    )
+    return 1
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
@@ -68,16 +80,7 @@ def main(argv=None):
         configure_logging(config.paths.log_dir)
         runner = build_runner(config)
     except Exception as exc:
-        # Setup failures (missing config, unwritable log dir) get the same
-        # machine-readable stderr contract as command failures, not a
-        # traceback.
-        print(
-            json.dumps(
-                {"status": "failed", "error": str(exc), "type": type(exc).__name__}
-            ),
-            file=sys.stderr,
-        )
-        return 1
+        return _fail(exc)
     logger = logging.getLogger("ibkr_pipeline")
 
     commands = {
@@ -94,13 +97,7 @@ def main(argv=None):
         result = commands[args.command]()
     except Exception as exc:
         logger.exception("pipeline_failed")
-        print(
-            json.dumps(
-                {"status": "failed", "error": str(exc), "type": type(exc).__name__}
-            ),
-            file=sys.stderr,
-        )
-        return 1
+        return _fail(exc)
 
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     if _result_has_errors(result):
