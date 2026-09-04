@@ -19,7 +19,6 @@ from pipeline.mongo_sink import (
     ensure_indexes,
     get_active_tickers,
     price_documents,
-    quote_documents,
     record_run,
     write_alphas,
     write_indicators,

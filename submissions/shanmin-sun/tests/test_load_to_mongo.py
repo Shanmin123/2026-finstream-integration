@@ -272,3 +272,32 @@ def test_batching_keeps_a_symbol_whole_and_covers_every_row(dataset_root):
     assert len(batches) == len(files)
     assert sum(len(b) for b in batches) == 4
     assert set(pd.concat(batches)["symbol"]) == {"AAPL", "MSFT"}
+
+
+def test_smoke_test_exits_nonzero_when_the_write_is_not_idempotent(monkeypatch,
+                                                                   capsys):
+    """--smoke-test is a gate: it is run before a load to prove the server
+    honours the conflict policies. A gate that returns 0 whatever it found is
+    not a gate."""
+    monkeypatch.setattr(load_to_mongo, "get_database", lambda: None)
+
+    monkeypatch.setattr(load_to_mongo, "smoke_test",
+                        lambda factory: {"idempotent": True, "found": 2})
+    assert load_to_mongo.main(["--smoke-test"]) == 0
+    assert '"status": "smoke_test"' in capsys.readouterr().out
+
+    monkeypatch.setattr(load_to_mongo, "smoke_test",
+                        lambda factory: {"idempotent": False, "found": 4})
+    assert load_to_mongo.main(["--smoke-test"]) == 1
+
+
+def test_smoke_test_reports_a_failure_rather_than_raising(monkeypatch, capsys):
+    def explode(factory):
+        raise RuntimeError("no server")
+
+    monkeypatch.setattr(load_to_mongo, "get_database", lambda: None)
+    monkeypatch.setattr(load_to_mongo, "smoke_test", explode)
+    assert load_to_mongo.main(["--smoke-test"]) == 1
+    captured = capsys.readouterr()
+    assert "no server" in captured.err
+    assert captured.out == "", "a failure must not print a success report"
