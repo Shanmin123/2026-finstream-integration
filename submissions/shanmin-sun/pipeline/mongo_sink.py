@@ -201,23 +201,6 @@ def _open_tunnel():
     return "127.0.0.1", tunnel.local_bind_port
 
 
-def close_connections():
-    """Drop the cached client and tunnel. For tests and long-lived processes;
-    a one-shot load can let the interpreter do it."""
-    for client in _CLIENTS.values():
-        try:
-            client.close()
-        except Exception:
-            logger.warning("client_close_failed", exc_info=True)
-    _CLIENTS.clear()
-    for tunnel in _TUNNELS.values():
-        try:
-            tunnel.stop()
-        except Exception:
-            logger.warning("tunnel_stop_failed", exc_info=True)
-    _TUNNELS.clear()
-
-
 def build_uri(host=None, port=None):
     uri = os.environ.get("MONGO_URI")
     if uri and host is None:

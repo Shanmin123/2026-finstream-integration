@@ -361,7 +361,14 @@ on the worker image; in a local test venv it rightly reports the
 platform-only packages as missing.
 
 The Spark compatibility test starts a local PySpark 3.5.1 session and reads the
-generated final Parquet partitions. Java 17 must be active for that test.
+generated final Parquet partitions. Java 17 must be active for that test. It is
+in `requirements-dev.txt` rather than `requirements.txt`, because the pipeline
+writes Parquet with pyarrow and never imports Spark; without it that one test
+skips and the rest of the suite runs.
+
+`python scripts/write_dataset_readme.py --data-root <root>` prints a note
+describing a collected dataset folder, with every count, date span and column
+list read from the Parquet itself. `--out` writes it beside the data.
 
 After the offline tests pass, run the live read-only check:
 

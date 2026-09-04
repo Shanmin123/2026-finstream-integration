@@ -40,6 +40,13 @@ KEYS = {
 DATE_COLUMN = {"news": "published_at_utc"}
 
 
+def _widen(span, low, high):
+    """Grow a [first, last] pair to cover one more pair of endpoints."""
+    low, high = str(low)[:10], str(high)[:10]
+    span[0] = low if span[0] is None else min(span[0], low)
+    span[1] = high if span[1] is None else max(span[1], high)
+
+
 def survey(root, dataset):
     """Row count, symbol count, date span and columns, from file metadata."""
     base = Path(root) / dataset
@@ -64,23 +71,35 @@ def survey(root, dataset):
                   if c in columns), None)
     wanted = [c for c in (column, stamp) if c]
     spans = {c: [None, None] for c in wanted}
-    # Every file, from its column statistics rather than its rows. Sampling the
-    # ends would be faster and wrong: files sort by year then symbol, and inside
-    # a year the symbols start on different dates, so the earliest date need not
-    # be in the first file. This note is a claim about someone else's data.
+    # Every file, not a sample of them: files sort by year then symbol, and
+    # inside a year the symbols start on different dates, so the earliest date
+    # need not be in the first file. This note is a claim about someone else's
+    # data, so it is read from all of it.
     for path in files:
         metadata = pq.read_metadata(path)
+        present = set(metadata.schema.names) & set(wanted)
+        counted = collections.Counter()
         for group in range(metadata.num_row_groups):
             row_group = metadata.row_group(group)
             for index in range(row_group.num_columns):
                 col = row_group.column(index)
                 name = col.path_in_schema
-                if name not in wanted or col.statistics is None:
+                if name not in present or col.statistics is None:
                     continue
-                low = str(col.statistics.min)[:10]
-                high = str(col.statistics.max)[:10]
-                spans[name][0] = low if spans[name][0] is None else min(spans[name][0], low)
-                spans[name][1] = high if spans[name][1] is None else max(spans[name][1], high)
+                counted[name] += 1
+                _widen(spans[name], col.statistics.min, col.statistics.max)
+        # Column statistics are optional in the parquet format, and a file
+        # written without them would leave the span at None, printing
+        # "Covers None to None" beside a correct row count. Read the column
+        # from those files instead. A row group short of statistics is enough
+        # to re-read, because the rest of the file does not cover its rows.
+        short = sorted(c for c in present if counted[c] < metadata.num_row_groups)
+        if short:
+            table = pq.read_table(path, columns=short)
+            for name in short:
+                values = [v for v in table.column(name).to_pylist() if v is not None]
+                if values:
+                    _widen(spans[name], min(values), max(values))
     return {
         "files": len(files), "rows": rows, "symbols": len(symbols),
         "years": sorted(per_year),
@@ -159,8 +178,14 @@ def render(root, surveys, generated, missing_symbols=()):
             f"  {DESCRIPTIONS[dataset]}",
             f"  {found['rows']:,} rows across {found['symbols']} symbols "
             f"in {found['files']:,} files.",
-            f"  Covers {found['first']} to {found['last']}.",
         ]
+        # A dataset whose date column is missing has no span to report. Saying
+        # so is the point of the note; "Covers None to None" is not.
+        if found["first"]:
+            lines.append(f"  Covers {found['first']} to {found['last']}.")
+        else:
+            lines.append(f"  No {DATE_COLUMN.get(dataset, 'event_date')} column, "
+                         "so the note cannot state the period covered.")
         if collected:
             lines.append(collected)
         lines += [

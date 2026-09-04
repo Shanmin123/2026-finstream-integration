@@ -67,6 +67,47 @@ def test_the_span_covers_files_the_ends_would_miss(tmp_path):
     assert found["last"] == "2026-11-30"
 
 
+def test_a_file_without_column_statistics_is_read_rather_than_skipped(tmp_path):
+    """Column statistics are optional in the parquet format. Skipping a file
+    that lacks them leaves the span at None, which renders as
+    "Covers None to None" beside a correct row count."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    directory = tmp_path / "prices" / "event_year=2025" / "symbol=AAPL"
+    directory.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pandas(price_frame("AAPL", ["2025-01-02", "2025-03-04"]),
+                             preserve_index=False),
+        directory / "part-000.parquet", write_statistics=False,
+    )
+    found = writer.survey(tmp_path, "prices")
+    assert (found["first"], found["last"]) == ("2025-01-02", "2025-03-04")
+    assert found["collected_first"] == "2026-09-01"
+
+
+def test_a_dataset_with_no_date_column_says_so_instead_of_printing_none(tmp_path,
+                                                                        capsys):
+    directory = tmp_path / "prices" / "event_year=2025" / "symbol=AAPL"
+    directory.mkdir(parents=True)
+    pd.DataFrame([{"symbol": "AAPL", "close": 1.0}]).to_parquet(
+        directory / "part-000.parquet", index=False
+    )
+    writer.main(["--data-root", str(tmp_path)])
+    text = capsys.readouterr().out
+    assert "None" not in text
+    assert "No event_date column" in text
+
+
+def test_out_writes_the_file_that_ships(dataset_root, tmp_path, capsys):
+    """--out is how the delivered note is produced; without it the script only
+    prints."""
+    target = tmp_path / "README.txt"
+    writer.main(["--data-root", str(dataset_root), "--out", str(target)])
+    assert "IBKR pipeline dataset" in target.read_text(encoding="utf-8")
+    assert f"wrote {target}" in capsys.readouterr().out
+
+
 def test_the_survey_reports_when_the_data_was_collected(dataset_root):
     """A dataset copied in from an earlier run must not sit beside a fresh one
     without saying so; the retrieval stamp is what makes that visible."""
